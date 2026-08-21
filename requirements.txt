@@ -1,0 +1,4 @@
+langchain-core
+langchain-fireworks
+langgraph
+python-dotenv
