@@ -12,7 +12,6 @@ def execute_bash(command: str) -> str:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=30
         )
         output = result.stdout
         if result.stderr:
