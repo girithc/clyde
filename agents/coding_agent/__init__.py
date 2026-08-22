@@ -1,15 +1,18 @@
 # Coding agent package.
 #
 # Structure:
-#   state.py  - shared AgentState TypedDict
-#   model.py  - LLM, system prompt, call_model node
-#   tools.py  - call_tools node
-#   graph.py  - should_continue router + compiled graph
+#   state.py      - Task/TaskResult models + SupervisorState/WorkerState
+#   prompts.py    - all prompt strings (incl. the exported system_prompt)
+#   model.py      - shared executor LLM binding + call_model node
+#   tools.py      - call_tools node
+#   worker/       - per-task subgraph (plan + context + executor + verify)
+#   supervisor/   - planner + fan-out + synthesize
+#   graph.py      - compiles worker + supervisor into the public `graph`
 #
 # Exports the agent contract used by agents/__init__.py:
 #   - graph          compiled langgraph graph ready to stream
 #   - system_prompt  the agent's system message string
 from agents.coding_agent.graph import graph
-from agents.coding_agent.model import system_prompt
+from agents.coding_agent.prompts import AGENT_SYSTEM_PROMPT as system_prompt
 
 __all__ = ["graph", "system_prompt"]

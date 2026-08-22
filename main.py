@@ -26,21 +26,29 @@ def main():
             conversation_history.append(HumanMessage(content=user_input))
 
             # Execute agent graph step-by-step
-            for event in graph.stream({"messages": conversation_history}, stream_mode="values"):
-                latest_msg = event["messages"][-1]
+            # Render every new message. Parallel tool calls append several
+            # ToolMessages at once, so don't look only at messages[-1] — that
+            # silently drops all but the last result.
+            seen = len(conversation_history)
+            for event in graph.stream(
+                {"messages": conversation_history},
+                stream_mode="values",
+                config={"recursion_limit": 100},
+            ):
+                for latest_msg in event["messages"][seen:]:
+                    # Show tool calls
+                    if hasattr(latest_msg, "tool_calls") and latest_msg.tool_calls:
+                        for call in latest_msg.tool_calls:
+                            print(f"🔧 [Tool Call]: {call['name']} -> Args: {call['args']}")
 
-                # Show tool calls
-                if hasattr(latest_msg, "tool_calls") and latest_msg.tool_calls:
-                    for call in latest_msg.tool_calls:
-                        print(f"🔧 [Tool Call]: {call['name']} -> Args: {call['args']}")
+                    # Show tool responses
+                    elif isinstance(latest_msg, ToolMessage):
+                        print(f"📥 [Tool Output]:\n{latest_msg.content.strip()}\n")
 
-                # Show tool responses
-                elif isinstance(latest_msg, ToolMessage):
-                    print(f"📥 [Tool Output]:\n{latest_msg.content.strip()}\n")
-
-                # Show final text response
-                elif latest_msg.content and latest_msg != conversation_history[-1]:
-                    print(f"\nAgent > {latest_msg.content}\n")
+                    # Show final text response
+                    elif latest_msg.content:
+                        print(f"\nAgent > {latest_msg.content}\n")
+                seen = len(event["messages"])
 
             # Update master history from graph state
             conversation_history = event["messages"]

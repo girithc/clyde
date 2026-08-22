@@ -19,7 +19,6 @@ from trace import compact_trace
 # Load .env before reading the keys so importers don't have to.
 load_dotenv()
 
-DEFAULT_API_KEY = "fw_CAz4SLCLabuZ6kHrLVkrho"
 DEFAULT_MODEL_ID = "accounts/fireworks/models/deepseek-v4-flash-0731"
 
 # --- Tracing ---
@@ -40,7 +39,9 @@ def get_llm(**kwargs) -> ChatFireworks:
     and take precedence over the env defaults. A compact trace callback is
     attached automatically.
     """
-    api_key = kwargs.pop("api_key", os.getenv("FIREWORKS_API_KEY", DEFAULT_API_KEY))
+    api_key = kwargs.pop("api_key", os.getenv("FIREWORKS_API_KEY"))
+    if not api_key:
+        raise RuntimeError("FIREWORKS_API_KEY is not set. Add it to your .env file.")
     model = kwargs.pop("model", os.getenv("FIREWORKS_MODEL_ID", DEFAULT_MODEL_ID))
     callbacks = kwargs.pop("callbacks", None)
     handler_list = [compact_trace] + (callbacks or [])
