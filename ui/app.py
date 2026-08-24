@@ -140,6 +140,11 @@ Screen {
     height: auto;
     border: round white;
     padding: 0;
+    align-horizontal: left;
+}
+#input-row {
+    height: auto;
+    padding: 0;
 }
 #attach {
     border: none;
@@ -159,11 +164,16 @@ Screen {
 }
 #attach-chip {
     height: 1;
+    width: auto;
     padding: 0 1;
-    color: $accent;
+    margin: 0 0 0 1;
+    color: black;
+    background: white;
+    border: none;
+    text-style: none;
     display: none;
 }
-#input-bar Input {
+#input-row Input {
     border: none;
     padding: 0 2;
     background: transparent;
@@ -248,6 +258,7 @@ class ClydeApp(App):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+t", "toggle_trace", "Toggle trace", priority=True),
+        Binding("shift+tab", "cycle_mode", "Cycle mode", priority=True),
         Binding("escape", "cancel_model_edit", "Cancel", priority=True),
     ]
 
@@ -276,7 +287,6 @@ class ClydeApp(App):
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
         with Container(id="input-bar"):
-            yield AttachChip("", id="attach-chip")
             with Horizontal(id="input-row"):
                 yield Input(id="input", placeholder="Message…")
                 yield Select(
@@ -287,6 +297,7 @@ class ClydeApp(App):
                 yield Input(id="model-id", classes="model-edit")
                 yield Button("Confirm", id="confirm", classes="model-edit")
                 yield Button("✕", id="close", classes="model-edit")
+            yield AttachChip("", id="attach-chip")
         with Horizontal(id="status-bar"):
             yield Button("+", id="attach")
             yield TraceStatus(id="trace-status")
@@ -294,7 +305,7 @@ class ClydeApp(App):
             yield ModeStatus(id="mode-status")
             yield StatusSep()
             yield ModelStatus(id="model-status")
-            yield Static("ctrl-c to exit", id="exit-hint")
+            yield Static("ctrl-c to exit", id="exit-hint")  # rotates: see _rotate_hint
 
     async def on_mount(self) -> None:
         self.transcript = self.query_one("#transcript", Transcript)
@@ -304,6 +315,7 @@ class ClydeApp(App):
         self.trace_status = self.query_one("#trace-status", TraceStatus)
         self.mode_status = self.query_one("#mode-status", ModeStatus)
         self.model_status = self.query_one("#model-status", ModelStatus)
+        self.exit_hint = self.query_one("#exit-hint", Static)
         self.update_trace_status()
         self.update_mode_status()
         self.update_model_status()
@@ -318,6 +330,15 @@ class ClydeApp(App):
         # Proactive greeting: stream an LLM-generated, context-aware greet.
         await self._start_greet()
         self.input.focus()
+        # Rotate the bottom-right hint between keybindings so each gets a turn.
+        self._hint_index = 0
+        self._hint_timer = self.set_interval(8, self._rotate_hint)
+
+    _HINTS = ("ctrl-c to exit", "shift-tab to cycle mode")
+
+    def _rotate_hint(self) -> None:
+        self._hint_index = (self._hint_index + 1) % len(self._HINTS)
+        self.exit_hint.update(self._HINTS[self._hint_index])
 
     # --- trace mode (none / minimal / full) ---
 
@@ -334,6 +355,9 @@ class ClydeApp(App):
 
     def action_toggle_trace(self) -> None:
         self.cycle_trace_mode()
+
+    def action_cycle_mode(self) -> None:
+        self.cycle_agent_mode()
 
     # --- agent mode (auto / plan / ask) — UI state only, not wired to the planner ---
 
