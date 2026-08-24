@@ -33,8 +33,26 @@ MAX_CONTEXT_TOKENS = 24000
 
 
 def _approx_tokens(messages) -> int:
-    """~4 chars per token — good enough for trimming, no tokenizer needed."""
-    return sum(len(m.content) for m in messages if isinstance(m.content, str)) // 4
+    """~4 chars per token — good enough for trimming, no tokenizer needed.
+
+    Content-aware: multimodal messages carry a list of parts, so we sum the
+    text-part lengths and charge a flat ~1000 tokens per image so images are
+    not trimmed for free once context pressure builds.
+    """
+    total = 0
+    for m in messages:
+        c = m.content
+        if isinstance(c, str):
+            total += len(c)
+        elif isinstance(c, list):
+            for p in c:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("type") == "image_url":
+                    total += 1000
+                else:
+                    total += len(p.get("text", ""))
+    return total // 4
 
 
 def call_model(state: MessageState):

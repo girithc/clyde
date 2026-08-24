@@ -18,25 +18,28 @@ right after the current turn — no separate "Planning" block / new-turn framing
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import time
 from collections import deque
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from rich.markdown import Markdown
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Container, Horizontal
 from textual.message import Message
 from textual.widgets import Button, Input, Select, Static
 
 import llm
-from llm.registry import PROVIDERS
+from llm.registry import PROVIDERS, supports_vision
+from ui.filepicker import pick_image_native
 from ui.renderer import (
     agent_renderable,
     spacer_renderable,
     user_renderable,
-    welcome_renderable,
 )
 from ui.thinking import ThinkingIndicator
 from ui.trace_full import full_trace_renderable
@@ -68,6 +71,23 @@ class _TurnDone(Message):
     pass
 
 
+class _VisionProbed(Message):
+    """Posted from a probe worker with the live vision-capability result."""
+
+    def __init__(self, result: bool, key: tuple[str, str]) -> None:
+        self.result = result
+        self.key = key
+        super().__init__()
+
+
+class _FilePicked(Message):
+    """Posted from the native-picker worker with the chosen path (or None)."""
+
+    def __init__(self, path: str | None) -> None:
+        self.path = path
+        super().__init__()
+
+
 class TraceStatus(Static):
     """Clickable trace-mode status (none / minimal / full)."""
 
@@ -96,6 +116,13 @@ class ModelStatus(Static):
         self.app.enter_model_edit()
 
 
+class AttachChip(Static):
+    """Shows pending image attachments; click to clear them all."""
+
+    def on_click(self, event) -> None:
+        self.app.clear_attachments()
+
+
 _CSS = """
 Screen {
     background: black;
@@ -114,6 +141,28 @@ Screen {
     border: round white;
     padding: 0;
 }
+#attach {
+    border: none;
+    min-width: 3;
+    width: 3;
+    height: 1;
+    padding: 0;
+    margin: 0 1 0 0;
+    color: white;
+    background: transparent;
+}
+#attach:hover {
+    text-style: bold;
+}
+#attach:disabled {
+    color: $text-muted;
+}
+#attach-chip {
+    height: 1;
+    padding: 0 1;
+    color: $accent;
+    display: none;
+}
 #input-bar Input {
     border: none;
     padding: 0 2;
@@ -127,7 +176,7 @@ Screen {
     border: none;
     padding: 0 2;
     background: transparent;
-    width: 18;
+    width: 22;
     min-width: 0;
 }
 #model-id {
@@ -215,22 +264,31 @@ class ClydeApp(App):
         self._edit_model = False  # inline model-edit mode in the input bar
         self.indicator: ThinkingIndicator | None = None
         self.streaming: Static | None = None
+        # Image attachment state — only meaningful when the current model is
+        # vision-capable (see self._vision).
+        self._image_parts: list[dict] = []   # pending image_url content parts
+        self._image_names: list[str] = []    # filenames for display only
+        self._vision: bool = False           # recomputed on mount + model switch
+        self._vision_probing: set[tuple[str, str]] = set()  # in-flight probe keys
 
     # --- layout ---
 
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
-        with Horizontal(id="input-bar"):
-            yield Input(id="input", placeholder="Message…")
-            yield Select(
-                [(p, p) for p in PROVIDERS],
-                id="provider",
-                classes="model-edit",
-            )
-            yield Input(id="model-id", classes="model-edit")
-            yield Button("Confirm", id="confirm", classes="model-edit")
-            yield Button("✕", id="close", classes="model-edit")
+        with Container(id="input-bar"):
+            yield AttachChip("", id="attach-chip")
+            with Horizontal(id="input-row"):
+                yield Input(id="input", placeholder="Message…")
+                yield Select(
+                    [(p, p) for p in PROVIDERS],
+                    id="provider",
+                    classes="model-edit",
+                )
+                yield Input(id="model-id", classes="model-edit")
+                yield Button("Confirm", id="confirm", classes="model-edit")
+                yield Button("✕", id="close", classes="model-edit")
         with Horizontal(id="status-bar"):
+            yield Button("+", id="attach")
             yield TraceStatus(id="trace-status")
             yield StatusSep()
             yield ModeStatus(id="mode-status")
@@ -250,7 +308,15 @@ class ClydeApp(App):
         self.update_mode_status()
         self.update_model_status()
         self._apply_edit_visibility()
-        await self.transcript.append(welcome_renderable())
+        # Vision gating: show the attach button only if the current model can
+        # see images. Recomputed live whenever the model switches.
+        self._vision = supports_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
+        self._refresh_attach()
+        # Unknown to the pattern list? Ask the LLM in the background; the button
+        # appears if the probe says yes.
+        self.maybe_probe_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
+        # Proactive greeting: stream an LLM-generated, context-aware greet.
+        await self._start_greet()
         self.input.focus()
 
     # --- trace mode (none / minimal / full) ---
@@ -308,12 +374,20 @@ class ClydeApp(App):
             self.input.styles.display = "block"
             for w in self.query(".model-edit"):
                 w.styles.display = "none"
+        self._refresh_attach()
 
     def action_cancel_model_edit(self) -> None:
         if self._edit_model:
             self.exit_model_edit()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "attach":
+            # Open the native macOS file picker; only when idle and vision-capable.
+            # Runs off the UI thread so the Textual loop doesn't block on the dialog.
+            if self._busy or not self._vision:
+                return
+            self.run_worker(self._pick_image_worker, thread=True)
+            return
         if event.button.id == "confirm":
             provider = self.provider_select.value
             model_id = self.model_id_input.value.strip()
@@ -360,6 +434,13 @@ class ClydeApp(App):
             _sum = sys.modules.get("tools.summarize")
             if _sum is not None and hasattr(_sum, "configure_model"):
                 _sum.configure_model(provider, model_id)
+            # Recompute vision capability for the new model and gate the + button.
+            self._vision = supports_vision(provider, model_id)
+            if not self._vision:
+                self.clear_attachments()
+            self._refresh_attach()
+            # Unknown to the pattern list? Probe in the background.
+            self.maybe_probe_vision(provider, model_id)
             self.update_model_status()
             self.notify(f"model: {model_id}", timeout=3)
         except Exception as e:
@@ -414,23 +495,137 @@ class ClydeApp(App):
             await self._start_continue()
         else:
             self._busy = False
+            self._refresh_attach()
 
     # --- trace sink target (called from main.py on the worker/MCP threads) ---
 
     def post_trace(self, line: str) -> None:
         self.post_message(_TraceLine(line))
 
+    # --- image attachment handling ---
+
+    def _refresh_attach(self) -> None:
+        """Show/hide the + button: only when vision-capable and not editing."""
+        try:
+            btn = self.query_one("#attach", Button)
+        except Exception:
+            return
+        show = self._vision and not self._edit_model
+        btn.styles.display = "block" if show else "none"
+        btn.disabled = self._busy or not self._vision
+
+    def _render_chip(self) -> None:
+        """Render the pending-attachments chip (hidden when empty)."""
+        chip = self.query_one("#attach-chip", AttachChip)
+        if self._image_names:
+            chip.update("  " + "  ".join(f"🖼 {n} ✕" for n in self._image_names))
+            chip.styles.display = "block"
+        else:
+            chip.update("")
+            chip.styles.display = "none"
+
+    def clear_attachments(self) -> None:
+        """Drop all pending image attachments (chip click)."""
+        self._image_parts = []
+        self._image_names = []
+        self._render_chip()
+
+    def maybe_probe_vision(self, provider: str, model_id: str) -> None:
+        """If vision capability is unknown, ask the LLM in a worker thread.
+
+        Pattern match + cache are instant; this only fires for models neither
+        resolves (e.g. a freshly-typed id like muse-glimmer-30b). The probe runs
+        once per model — an in-flight guard prevents duplicate probes during
+        rapid model switching.
+        """
+        from llm.registry import needs_vision_probe
+
+        key = ((provider or "").lower(), (model_id or "").lower())
+        if not needs_vision_probe(provider, model_id) or key in self._vision_probing:
+            return
+        self._vision_probing.add(key)
+        self.run_worker(lambda: self._probe_vision_run(provider, model_id, key), thread=True)
+
+    def _probe_vision_run(self, provider: str, model_id: str, key: tuple[str, str]) -> None:
+        from llm.registry import probe_vision
+
+        try:
+            result = probe_vision(provider, model_id)
+        except Exception:
+            result = False
+        self.post_message(_VisionProbed(result, key))
+
+    async def on__vision_probed(self, message: _VisionProbed) -> None:
+        self._vision_probing.discard(message.key)
+        # Only adopt the result if it's still for the current model.
+        if ((llm.CURRENT_PROVIDER or "").lower(), (llm.CURRENT_MODEL_ID or "").lower()) != message.key:
+            return
+        self._vision = message.result
+        if not message.result:
+            self.clear_attachments()
+        self._refresh_attach()
+        if message.result:
+            self.notify("model supports images — + enabled", timeout=3)
+
+    def _pick_image_worker(self) -> None:
+        """Worker thread: open the native macOS picker and post the path back."""
+        path = pick_image_native()
+        self.post_message(_FilePicked(path))
+
+    async def on__file_picked(self, message: _FilePicked) -> None:
+        """Encode the picked image and attach it to the pending message."""
+        path = message.path
+        if not path:
+            return  # cancelled
+        p = Path(path)
+        try:
+            data = p.read_bytes()
+        except OSError as e:
+            self.notify(f"couldn't read {p.name}: {e}", timeout=4)
+            return
+        mime, _ = mimetypes.guess_type(str(p))
+        if not mime or not mime.startswith("image/"):
+            mime = "image/png"
+        url = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        self._image_parts.append({"type": "image_url", "image_url": {"url": url}})
+        self._image_names.append(p.name)
+        self._render_chip()
+        self.input.focus()
+
+    def _build_human_message(self, text: str) -> HumanMessage:
+        """Build the user message, attaching any pending images as multimodal parts.
+
+        Images are consumed here — the chip clears once they're folded into the
+        message that enters the graph.
+        """
+        if not self._image_parts:
+            return HumanMessage(content=text)
+        parts: list[dict] = []
+        if text:
+            parts.append({"type": "text", "text": text})
+        parts.extend(self._image_parts)
+        self._image_parts = []
+        self._image_names = []
+        self._render_chip()
+        return HumanMessage(content=parts)
+
     # --- input handling ---
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        if not text:
+        if not text and not self._image_parts:
             return
         if text.lower() in ("exit", "quit"):
             self.exit()
             return
+        # If the model lost vision between attach and submit, drop the images.
+        if self._image_parts and not self._vision:
+            self.notify("current model can't see images — attach cleared", timeout=4)
+            self.clear_attachments()
         self.input.value = ""
-        await self.transcript.append(user_renderable(text))
+        images = list(self._image_names)
+        msg = self._build_human_message(text)
+        await self.transcript.append(user_renderable(text, images))
         await self.transcript.append(spacer_renderable())
         if self._busy:
             # Mid-turn: surface inline now, process as a continuation after.
@@ -441,27 +636,87 @@ class ClydeApp(App):
                 pending.append(
                     SystemMessage(content=f"[Skill: {skill.name}]\n{skill.body}")
                 )
-            pending.append(HumanMessage(content=text))
+            pending.append(msg)
             self._pending.extend(pending)
         else:
-            await self._start_turn(text)
+            await self._start_turn(text, msg)
 
-    async def _start_turn(self, text: str) -> None:
+    async def _start_turn(self, text: str, msg: HumanMessage) -> None:
         self._busy = True
+        self._refresh_attach()
         self.streaming = None
         self.indicator = ThinkingIndicator()
         await self.transcript.append_live(self.indicator)
         self.indicator.start()
-        self.run_worker(lambda: self._turn(text), thread=True)
+        self.run_worker(lambda: self._turn(text, msg), thread=True)
 
     async def _start_continue(self) -> None:
         # Same as _start_turn but the pending HumanMessage is already in history.
         self._busy = True
+        self._refresh_attach()
         self.streaming = None
         self.indicator = ThinkingIndicator()
         await self.transcript.append_live(self.indicator)
         self.indicator.start()
         self.run_worker(self._continue_run, thread=True)
+
+    async def _start_greet(self) -> None:
+        """Proactive greeting at session start — streamed, context-aware, non-blocking."""
+        self._busy = True
+        self._refresh_attach()
+        self.streaming = None
+        self.indicator = ThinkingIndicator()
+        await self.transcript.append_live(self.indicator)
+        self.indicator.start()
+        self.run_worker(self._greet_run, thread=True)
+
+    def _greet_run(self) -> None:
+        """Run the greeting graph and stream it into the transcript.
+
+        Not part of conversation_history (display only). Falls back to a
+        static greet if the LLM call fails so a session never hangs on greet.
+        """
+        from agents.coding_agent.greeting import build_greet_graph
+
+        try:
+            greet_graph = build_greet_graph()
+            seen = 0
+            last_values = None
+            buffer = ""
+            stream_ns = None
+            last_post = 0.0
+            for mode, data in greet_graph.stream(
+                {"messages": []},
+                stream_mode=["messages", "values"],
+                config={"recursion_limit": 100},
+            ):
+                if mode == "messages":
+                    chunk, cmeta = data
+                    content = getattr(chunk, "content", "")
+                    if not content:
+                        continue
+                    ns = cmeta.get("langgraph_checkpoint_ns") if isinstance(cmeta, dict) else None
+                    if ns != stream_ns:
+                        stream_ns = ns
+                        buffer = ""
+                    buffer += content
+                    now = time.monotonic()
+                    if now - last_post >= _STREAM_THROTTLE_S:
+                        last_post = now
+                        self.post_message(_StreamChunk(buffer))
+                else:  # values
+                    last_values = data
+                    for msg in data["messages"][seen:]:
+                        if isinstance(msg, AIMessage) and msg.content:
+                            self.post_message(_AgentContent(msg.content))
+                    seen = len(data["messages"])
+        except Exception:
+            # Fallback: a static greet so the session still starts cleanly.
+            self.post_message(
+                _AgentContent("Clyde ready. What are we working on?")
+            )
+        finally:
+            self.post_message(_TurnDone())
 
     # --- one turn, runs in a worker thread (sync) ---
 
@@ -501,7 +756,7 @@ class ClydeApp(App):
         if last_values is not None:
             self.history = last_values["messages"]
 
-    def _turn(self, text: str) -> None:
+    def _turn(self, text: str, msg: HumanMessage) -> None:
         from plugins.skills import match_skills  # local import avoids a cycle
 
         try:
@@ -509,7 +764,7 @@ class ClydeApp(App):
                 self.history.append(
                     SystemMessage(content=f"[Skill: {skill.name}]\n{skill.body}")
                 )
-            self.history.append(HumanMessage(content=text))
+            self.history.append(msg)
             self._stream()
         finally:
             self.post_message(_TurnDone())

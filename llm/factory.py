@@ -17,17 +17,24 @@ import os
 from dotenv import load_dotenv
 from langchain_core.globals import set_debug, set_verbose
 
+from config import load_config, save_config
 from trace import compact_trace
 
 # Load .env before reading keys so importers don't have to.
 load_dotenv()
 
 DEFAULT_MODEL_ID = "accounts/fireworks/models/deepseek-v4-flash-0731"
+DEFAULT_PROVIDER = "fireworks"
 
 # Current provider/model — updated by `set_model` and read as the default by
-# `get_llm`, so every rebuilt LLM picks up the new provider/model.
-CURRENT_PROVIDER = "fireworks"
-CURRENT_MODEL_ID = os.getenv("FIREWORKS_MODEL_ID", DEFAULT_MODEL_ID)
+# `get_llm`, so every rebuilt LLM picks up the new provider/model. Precedence on
+# startup: persisted user choice > env override > built-in default, so a model
+# picked in one session carries into the next.
+_cfg = load_config()
+CURRENT_PROVIDER = _cfg.get("provider") or DEFAULT_PROVIDER
+CURRENT_MODEL_ID = (
+    _cfg.get("model_id") or os.getenv("FIREWORKS_MODEL_ID", DEFAULT_MODEL_ID)
+)
 
 # Raw JSON debug/verbose dumps are off; compact structured lines come from
 # trace.CompactTraceHandler (attached to every LLM below) instead.
@@ -78,14 +85,27 @@ def get_llm(
 
 
 def set_model(provider: str, model_id: str) -> None:
-    """Set the current provider + model and rebuild the ready instance."""
+    """Set the current provider + model, rebuild the ready instance, and persist.
+
+    The choice is written to ``~/.clyde/config.json`` so it survives across
+    sessions; the next process start loads it as the default.
+    """
     global CURRENT_PROVIDER, CURRENT_MODEL_ID, llm
     CURRENT_PROVIDER = provider
     CURRENT_MODEL_ID = model_id
     llm = get_llm(temperature=0)
+    save_config({"provider": provider, "model_id": model_id})
 
 
 # Ready-to-use default instance. Bind tools on the caller side:
 #   from llm import llm
 #   llm.bind_tools(tools)
-llm = get_llm(temperature=0)
+# Build with the startup provider/model; if that's unusable (a persisted choice
+# whose package/key is now missing, or a bad id), fall back to the built-in
+# default so import never bricks the app.
+try:
+    llm = get_llm(temperature=0)
+except Exception:
+    CURRENT_PROVIDER = DEFAULT_PROVIDER
+    CURRENT_MODEL_ID = DEFAULT_MODEL_ID
+    llm = get_llm(DEFAULT_PROVIDER, DEFAULT_MODEL_ID, temperature=0)

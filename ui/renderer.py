@@ -17,9 +17,12 @@ def agent_renderable(text: str) -> Markdown:
     return Markdown(text or "")
 
 
-def user_renderable(text: str) -> Text:
-    """A bold user line."""
-    return Text(f"> {text}", style="bold")
+def user_renderable(text: str, images: list[str] | None = None) -> Text:
+    """A bold user line, with any attached image filenames shown inline."""
+    line = Text(f"> {text}", style="bold")
+    for name in images or []:
+        line.append(f"  🖼 {name}", style="bold cyan")
+    return line
 
 
 def dim_line(text: str) -> Text:
