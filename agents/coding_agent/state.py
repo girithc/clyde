@@ -27,6 +27,22 @@ class Task(BaseModel):
 class Plan(BaseModel):
     """The planner's decomposition of a request."""
 
+    trivial: bool = Field(
+        default=False,
+        description=(
+            "True when the request needs no tools or decomposition — a simple "
+            "question, explanation, or single direct answer the model can give "
+            "in one shot. The supervisor then answers directly with no fan-out."
+        ),
+    )
+    shared: list[Task] = Field(
+        default_factory=list,
+        description=(
+            "Grunt work needed by more than one task (file discovery, shared "
+            "reads). Done once by the scout, not per task. Empty when no work "
+            "is shared."
+        ),
+    )
     tasks: list[Task]
 
 
@@ -50,12 +66,6 @@ class Approach(BaseModel):
     plan: str = Field(description="Concise step-by-step approach for this task.")
 
 
-class RelevantPaths(BaseModel):
-    """File paths a worker should pre-load for its task."""
-
-    paths: list[str]
-
-
 class MessageState(TypedDict):
     """Minimal message-carrying state used by the shared executor nodes."""
 
@@ -64,6 +74,9 @@ class MessageState(TypedDict):
 
 class SupervisorState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
+    trivial: bool
+    shared: list[Task]
+    shared_context: Annotated[list[BaseMessage], add_messages]
     tasks: Annotated[list[Task], add]
     results: Annotated[list[TaskResult], add]
 
@@ -71,5 +84,6 @@ class SupervisorState(TypedDict):
 class WorkerState(TypedDict):
     task: Task
     request: str
+    shared_context: list[BaseMessage]
     context: Annotated[list[BaseMessage], add_messages]
     results: Annotated[list[TaskResult], add]

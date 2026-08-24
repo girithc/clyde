@@ -7,8 +7,26 @@ from tools import tools
 
 from agents.coding_agent.state import MessageState
 
-# Tool-calling agent LLM shared by all workers.
+# Tool-calling agent LLM shared by all workers. Default binding uses the static
+# tool set so bare imports work; call `configure_executor` at startup to inject
+# extra tools (e.g. MCP tools) without rebuilding the compiled graph — `call_model`
+# reads this module global at call time, so the rebind takes effect live.
 llm = get_llm(temperature=0).bind_tools(tools)
+
+
+def configure_executor(tool_list):
+    """Rebind the executor LLM with a new tool set (called at startup)."""
+    global llm
+    llm = get_llm(temperature=0).bind_tools(tool_list)
+
+
+def configure_model(provider, model_id, tool_list):
+    """Rebind the executor LLM with a new provider + model (called on model switch)."""
+    global llm
+    from llm import set_model
+    set_model(provider, model_id)
+    llm = get_llm(provider, model_id, temperature=0).bind_tools(tool_list)
+
 
 # Drop oldest turns once context exceeds this many (approx) tokens.
 MAX_CONTEXT_TOKENS = 24000

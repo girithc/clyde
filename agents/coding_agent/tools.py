@@ -2,10 +2,21 @@
 
 from langchain_core.messages import ToolMessage
 
-from tools import tools_by_name
+from tools import tools_by_name as _initial
 from trace import compact_trace
 
 from agents.coding_agent.state import MessageState
+
+# Tool registry. Seeded with the static tools at import; call `configure_tools`
+# at startup to swap in a superset (static + MCP). `call_tools` reads this global
+# at call time, so the rebind takes effect without rebuilding the graph.
+_registry: dict[str, object] = dict(_initial)
+
+
+def configure_tools(tool_list):
+    """Replace the tool registry (called at startup with static + MCP tools)."""
+    global _registry
+    _registry = {t.name: t for t in tool_list}
 
 
 def call_tools(state: MessageState):
@@ -14,7 +25,7 @@ def call_tools(state: MessageState):
     tool_results = []
 
     for tool_call in last_message.tool_calls:
-        tool_fn = tools_by_name[tool_call["name"]]
+        tool_fn = _registry[tool_call["name"]]
         output = tool_fn.invoke(
             tool_call["args"],
             config={"callbacks": [compact_trace]},

@@ -3,64 +3,53 @@
 Each worker is isolated: its transcript lives in `context` (the supervisor never
 sees it), so parallel workers cannot read each other's tool output. Only the
 final `results` value bridges back to the supervisor.
+
+The worker is NOT steered to inspect files. File/code access is just tools
+(`read_file`, `get_file_structure`, `list_files`, `search_files`, ...) the
+executor calls only when the task actually needs them. The worker seeds a plan
+plus any scout-provided shared context, then runs the executor loop.
 """
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END
 
 from llm import get_llm
-from tools import get_file_structure, read_file
 
 from agents.coding_agent.model import call_model
-from agents.coding_agent.prompts import (
-    CONTEXT_SELECT_PROMPT,
-    TASK_PLANNER_PROMPT,
-    VERIFY_PROMPT,
-)
-from agents.coding_agent.state import (
-    Approach,
-    RelevantPaths,
-    TaskResult,
-    VerifyVerdict,
-    WorkerState,
-)
+from agents.coding_agent.prompts import TASK_PLANNER_PROMPT, VERIFY_PROMPT
+from agents.coding_agent.state import Approach, TaskResult, VerifyVerdict, WorkerState
 from agents.coding_agent.tools import call_tools
 
 
 _base_llm = get_llm(temperature=0)
 _plan_model = _base_llm.with_structured_output(Approach, method="function_calling")
-_context_model = _base_llm.with_structured_output(RelevantPaths, method="function_calling")
 _verify_model = _base_llm.with_structured_output(VerifyVerdict, method="function_calling")
 
 
+def configure_model(provider, model_id):
+    """Rebind the worker LLMs with a new provider + model (on model switch)."""
+    global _base_llm, _plan_model, _verify_model
+    from llm import set_model
+    set_model(provider, model_id)
+    _base_llm = get_llm(provider, model_id, temperature=0)
+    _plan_model = _base_llm.with_structured_output(Approach, method="function_calling")
+    _verify_model = _base_llm.with_structured_output(VerifyVerdict, method="function_calling")
+
+
 def task_planner_node(state: WorkerState):
-    """Seed a step-by-step approach into the worker's context."""
+    """Seed the worker's context: scout shared data (if any), a plan, the task."""
     task = state["task"]
     approach = _plan_model.invoke(f"{TASK_PLANNER_PROMPT}\n\nTask: {task.description}")
     if approach is None or not approach.plan.strip():
         raise ValueError(
             f"task_planner: empty plan for task {task.id!r}; got {approach!r}"
         )
-    return {"context": [SystemMessage(content=f"Plan for '{task.id}':\n{approach.plan}")]}
 
-
-def select_context_node(state: WorkerState):
-    """Pre-load the project tree and the files relevant to this task."""
-    task = state["task"]
-    tree = get_file_structure.invoke({})
-
-    relevant = _context_model.invoke(
-        f"{CONTEXT_SELECT_PROMPT}\n\nTask: {task.description}\n\nFile tree:\n{tree}"
-    )
-    if relevant is None or relevant.paths is None:
-        raise ValueError(
-            f"select_context: no paths for task {task.id!r}; got {relevant!r}"
-        )
-
-    messages = [SystemMessage(content=f"Project tree:\n{tree}")]
-    for path in relevant.paths:
-        contents = read_file.invoke({"file_path": path})
-        messages.append(SystemMessage(content=f"--- {path} ---\n{contents}"))
+    messages = []
+    # Scout's gathered data, if this request had shared grunt work.
+    shared = state.get("shared_context") or []
+    messages.extend(list(shared))
+    messages.append(SystemMessage(content=f"Plan for '{task.id}':\n{approach.plan}"))
     messages.append(
         HumanMessage(content=f"Task: {task.description}\n\nRequest: {state['request']}")
     )

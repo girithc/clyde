@@ -1,12 +1,16 @@
-"""Compact structured tracing for the REPL.
+"""Compact structured tracing.
 
 Replaces LangChain's default verbose/debug JSON dumps with one clean line per
-event, printed to stdout so it sits alongside the REPL UI. Covers LLM calls and
-tool runs; the graph node flow is already surfaced by main.py's own prints.
+event. Covers LLM calls and tool runs; the graph node flow is surfaced by the
+UI.
+
+Output goes through a configurable ``sink`` (default: ``print``). The TUI sets
+the sink to route trace lines into the scrolling transcript as dimmed text,
+instead of `print` corrupting the full-screen app.
 """
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -17,18 +21,27 @@ class CompactTraceHandler(BaseCallbackHandler):
     def __init__(self):
         self._llm_starts: dict[str, float] = {}
         self._tool_starts: dict[str, float] = {}
+        self._sink: Callable[[str], Any] = print
+
+    def set_sink(self, sink: Callable[[str], Any]) -> None:
+        """Redirect trace lines (default ``print``; the TUI sets its own)."""
+        self._sink = sink
+
+    def _emit(self, line: str) -> None:
+        self._sink(line)
 
     # --- LLM ---
 
     def on_llm_start(self, serialized, prompts, *, run_id, **kwargs):
         self._llm_starts[str(run_id)] = time.time()
         n = len(prompts[0].splitlines()) if prompts else 0
-        print(f"🧠 [LLM] start — {n} message-lines in context")
+        self._emit(f"[LLM] start — {n} message-lines in context")
 
     def on_llm_end(self, response, *, run_id, **kwargs):
         started = self._llm_starts.pop(str(run_id), None)
         secs = f"{time.time() - started:.2f}s" if started else "?s"
         usage = (response.llm_output or {}).get("token_usage", {})
+        in_toks = usage.get("prompt_tokens", "?")
         out_toks = usage.get("completion_tokens", "?")
         finish = None
         try:
@@ -36,14 +49,16 @@ class CompactTraceHandler(BaseCallbackHandler):
             finish = gen.generation_info.get("finish_reason") if gen else None
         except (IndexError, AttributeError):
             pass
-        print(f"✅ [LLM] end — {secs}, {out_toks} out tokens, finish={finish}")
+        self._emit(
+            f"[LLM] end — {secs} · ↑ {in_toks} in · ↓ {out_toks} out · finish={finish}"
+        )
 
     # --- Tools ---
 
     def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
         self._tool_starts[str(run_id)] = time.time()
         name = (serialized or {}).get("name", "tool")
-        print(f"🔧 [Tool] start — {name}({input_str})")
+        self._emit(f"[Tool] start — {name}({input_str})")
 
     def on_tool_end(self, output, *, run_id, **kwargs):
         started = self._tool_starts.pop(str(run_id), None)
@@ -51,7 +66,7 @@ class CompactTraceHandler(BaseCallbackHandler):
         preview = str(output).strip().replace("\n", " ")
         if len(preview) > 120:
             preview = preview[:120] + "…"
-        print(f"📥 [Tool] end — {secs}: {preview}")
+        self._emit(f"[Tool] end — {secs}: {preview}")
 
 
 # Shared singleton — attach on the LLM in llm.py via callbacks=[...].

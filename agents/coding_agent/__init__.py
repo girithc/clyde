@@ -13,6 +13,6 @@
 #   - graph          compiled langgraph graph ready to stream
 #   - system_prompt  the agent's system message string
 from agents.coding_agent.graph import graph
-from agents.coding_agent.prompts import AGENT_SYSTEM_PROMPT as system_prompt
+from agents.coding_agent.prompts import system_prompt
 
 __all__ = ["graph", "system_prompt"]
