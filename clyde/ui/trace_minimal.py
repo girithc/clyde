@@ -15,10 +15,10 @@ def _summarize(line: str) -> str:
     if line.startswith("[LLM] start"):
         return "thinking"
     if line.startswith("[LLM] end"):
-        # "[LLM] end — 3.12s, 294 out tokens, finish=stop"
+        # "[LLM] end — 3.12s · ↑ 294 in · ↓ 180 out · finish=stop"
         try:
             right = line.split("—", 1)[1]
-            secs = right.split(",", 1)[0].strip()
+            secs = right.split("·", 1)[0].strip()
             return f"  done {secs}"
         except Exception:
             return "  done"

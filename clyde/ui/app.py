@@ -45,7 +45,7 @@ from clyde.ui.renderer import (
     user_renderable,
 )
 from clyde.ui.thinking import ThinkingIndicator
-from clyde.ui.trace_full import full_trace_renderable
+from clyde.ui.trace_full import TraceBlock
 from clyde.ui.trace_minimal import minimal_trace_renderable
 from clyde.ui.transcript import Transcript
 
@@ -53,8 +53,8 @@ from clyde.ui.transcript import Transcript
 # --- worker -> UI messages (posted from the turn thread, handled on the UI thread) ---
 
 class _TraceLine(Message):
-    def __init__(self, line: str) -> None:
-        self.line = line
+    def __init__(self, event) -> None:
+        self.event = event
         super().__init__()
 
 
@@ -579,18 +579,19 @@ class ClydeApp(App):
     # --- message handlers (UI thread; async so we can mount into the transcript) ---
 
     async def on__trace_line(self, message: _TraceLine) -> None:
-        line = message.line
-        if self.indicator is not None and line.startswith("[LLM] end"):
+        event = message.event
+        header = event.header
+        if self.indicator is not None and header.startswith("[LLM] end"):
             # Accumulate output tokens: "[LLM] end — 3.12s · ↑ 1234 in · ↓ 294 out · …"
             import re
 
-            m = re.search(r"↓\s*(\d+)\s*out", line)
+            m = re.search(r"↓\s*(\d+)\s*out", header)
             if m:
                 self.indicator.add_tokens(int(m.group(1)))
         if self.trace_mode == "full":
-            await self.transcript.append(full_trace_renderable(line))
+            await self.transcript.append_live(TraceBlock(header, event.body))
         elif self.trace_mode == "minimal":
-            await self.transcript.append(minimal_trace_renderable(line))
+            await self.transcript.append(minimal_trace_renderable(header))
         # "none" -> no inline trace line
 
     async def on__stream_chunk(self, message: _StreamChunk) -> None:
@@ -793,8 +794,8 @@ class ClydeApp(App):
 
     # --- trace sink target (called from main.py on the worker/MCP threads) ---
 
-    def post_trace(self, line: str) -> None:
-        self.post_message(_TraceLine(line))
+    def post_trace(self, event) -> None:
+        self.post_message(_TraceLine(event))
 
     # --- image attachment handling ---
 
