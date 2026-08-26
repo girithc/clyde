@@ -15,10 +15,11 @@ from rich.text import Text
 def agent_renderable(text: str) -> Markdown:
     """The agent's Markdown answer — rendered headers/bold/tables/lists.
 
-    Prose is white so Clyde's responses read as a distinct voice from the
-    user's cyan-bold lines; fenced code blocks keep their syntax theme (monokai).
+    Prose is pure white (#ffffff, bypassing the theme's ANSI-white mapping) so
+    Clyde's responses read as a distinct voice from the user's cyan-bold lines;
+    fenced code blocks keep their syntax theme (monokai).
     """
-    return Markdown(text or "", style="white")
+    return Markdown(text or "", style="#ffffff")
 
 
 def user_renderable(text: str, images: list[str] | None = None) -> Text:

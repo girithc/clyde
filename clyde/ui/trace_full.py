@@ -21,7 +21,7 @@ class TraceBlock(VerticalScroll):
     TraceBlock {
         height: auto;
         max-height: 16;
-        border: round $text-muted;
+        border: round #555555;
         padding: 0 1;
         margin: 0 0 0 2;
         scrollbar-size: 0 0;
