@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from llm import get_llm
+from clyde.llm import get_llm
 
-from agents.coding_agent.greeting.prompts import GREET_PROMPT, build_greet_prompt
-from agents.coding_agent.state import MessageState
+from clyde.agents.coding_agent.greeting.prompts import GREET_PROMPT, build_greet_prompt
+from clyde.agents.coding_agent.state import MessageState
 
 # Plain LLM (current provider/model), no tools bound.
 _llm = get_llm(temperature=0)

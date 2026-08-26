@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.coding_agent.greeting.context import session_context
+from clyde.agents.coding_agent.greeting.context import session_context
 
 GREET_PROMPT = (
     "You are Clyde, a coding assistant. Greet the user briefly and warmly to start "

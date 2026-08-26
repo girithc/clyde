@@ -13,12 +13,12 @@ plus any scout-provided shared context, then runs the executor loop.
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END
 
-from llm import get_llm
+from clyde.llm import get_llm
 
-from agents.coding_agent.model import call_model
-from agents.coding_agent.prompts import TASK_PLANNER_PROMPT, VERIFY_PROMPT
-from agents.coding_agent.state import Approach, TaskResult, VerifyVerdict, WorkerState
-from agents.coding_agent.tools import call_tools
+from clyde.agents.coding_agent.model import call_model
+from clyde.agents.coding_agent.prompts import TASK_PLANNER_PROMPT, VERIFY_PROMPT
+from clyde.agents.coding_agent.state import Approach, TaskResult, VerifyVerdict, WorkerState
+from clyde.agents.coding_agent.tools import call_tools
 
 
 _base_llm = get_llm(temperature=0)

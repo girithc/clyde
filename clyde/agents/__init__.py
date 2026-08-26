@@ -7,7 +7,7 @@
 # Each agent module exports:
 #   - graph          compiled langgraph graph ready to stream
 #   - system_prompt  the agent's system message string
-from agents.coding_agent import graph as coding_graph, system_prompt as coding_prompt
+from clyde.agents.coding_agent import graph as coding_graph, system_prompt as coding_prompt
 
 # Default agent used by the REPL.
 default_graph = coding_graph

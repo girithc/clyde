@@ -2,10 +2,10 @@
 
 from langchain_core.messages.utils import trim_messages
 
-from llm import get_llm
-from tools import tools
+from clyde.llm import get_llm
+from clyde.tools import tools
 
-from agents.coding_agent.state import MessageState
+from clyde.agents.coding_agent.state import MessageState
 
 # Tool-calling agent LLM shared by all workers. Default binding uses the static
 # tool set so bare imports work; call `configure_executor` at startup to inject

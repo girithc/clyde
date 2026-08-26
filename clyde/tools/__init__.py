@@ -1,13 +1,13 @@
 from langchain_core.tools import BaseTool
 
-from tools.execute_bash import execute_bash
-from tools.get_file_structure import get_file_structure
-from tools.list_files import list_files
-from tools.mcp_manage import add_mcp, delete_mcp, get_mcp
-from tools.read_file import read_file
-from tools.search_files import search_files
-from tools.search_mcp import search_mcp
-from tools.summarize import summarize
+from clyde.tools.execute_bash import execute_bash
+from clyde.tools.get_file_structure import get_file_structure
+from clyde.tools.list_files import list_files
+from clyde.tools.mcp_manage import add_mcp, delete_mcp, get_mcp
+from clyde.tools.read_file import read_file
+from clyde.tools.search_files import search_files
+from clyde.tools.search_mcp import search_mcp
+from clyde.tools.summarize import summarize
 
 # Registry of all tools available to the agent.
 # The MCP management tools (get_mcp/add_mcp/delete_mcp/search_mcp) are built-in

@@ -1,13 +1,13 @@
 """Terminal UI for Clyde (textual TUI + rich renderables)."""
 
-from ui.renderer import (
+from clyde.ui.renderer import (
     agent_renderable,
     spacer_renderable,
     user_renderable,
     welcome_renderable,
 )
-from ui.app import ClydeApp
-from ui.transcript import Transcript
+from clyde.ui.app import ClydeApp
+from clyde.ui.transcript import Transcript
 
 __all__ = [
     "ClydeApp",

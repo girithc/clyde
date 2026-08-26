@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
-from agents.coding_agent.greeting.nodes import greet_node
-from agents.coding_agent.state import MessageState
+from clyde.agents.coding_agent.greeting.nodes import greet_node
+from clyde.agents.coding_agent.state import MessageState
 
 
 def build_greet_graph():

@@ -10,7 +10,7 @@ calls it, rather than every result being auto-summarized.
 
 from langchain_core.tools import tool
 
-from llm import get_llm
+from clyde.llm import get_llm
 
 # Plain LLM with no tools bound, so it can't recurse into another tool call.
 _llm = get_llm(temperature=0)

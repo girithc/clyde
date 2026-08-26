@@ -2,10 +2,10 @@
 
 from langchain_core.messages import ToolMessage
 
-from tools import tools_by_name as _initial
-from trace import compact_trace
+from clyde.tools import tools_by_name as _initial
+from clyde.trace import compact_trace
 
-from agents.coding_agent.state import MessageState
+from clyde.agents.coding_agent.state import MessageState
 
 # Tool registry. Seeded with the static tools at import; call `configure_tools`
 # at startup to swap in a superset (static + MCP). `call_tools` reads this global

@@ -2,8 +2,8 @@
 
 from langgraph.graph import END, StateGraph
 
-from agents.coding_agent.state import WorkerState
-from agents.coding_agent.worker import nodes
+from clyde.agents.coding_agent.state import WorkerState
+from clyde.agents.coding_agent.worker import nodes
 
 
 def build_worker():
