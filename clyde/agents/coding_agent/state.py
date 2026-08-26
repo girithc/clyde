@@ -10,7 +10,7 @@ Two graph states:
 """
 
 from operator import add
-from typing import Annotated, TypedDict
+from typing import Annotated, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -24,6 +24,33 @@ class Task(BaseModel):
     description: str = Field(description="One clear, self-contained instruction.")
 
 
+class ClarifyOption(BaseModel):
+    """One choice the user can pick when Clyde asks for clarification."""
+
+    label: str = Field(description="Short option label, e.g. 'Patch the bug'.")
+    description: str = Field(
+        default="",
+        description="One-line subtitle explaining what this choice entails.",
+    )
+    recommended: bool = Field(
+        default=False,
+        description="True for the single option Clyde recommends. Put it first.",
+    )
+
+
+class ClarifyQuestion(BaseModel):
+    """One clarifying question surfaced to the user before any work begins."""
+
+    question: str = Field(description="The clarifying question to show the user.")
+    options: list[ClarifyOption] = Field(
+        description="Distinct, mutually exclusive choices. Recommended option first."
+    )
+    multi_select: bool = Field(
+        default=False,
+        description="True if the user may pick multiple options (reserved; UI is single-select).",
+    )
+
+
 class Plan(BaseModel):
     """The planner's decomposition of a request."""
 
@@ -33,6 +60,18 @@ class Plan(BaseModel):
             "True when the request needs no tools or decomposition — a simple "
             "question, explanation, or single direct answer the model can give "
             "in one shot. The supervisor then answers directly with no fan-out."
+        ),
+    )
+    clarify: Optional[list[ClarifyQuestion]] = Field(
+        default=None,
+        description=(
+            "A list of clarifying questions to surface to the user BEFORE any "
+            "work, when the request is genuinely ambiguous and guessing wrong "
+            "is costly (multiple valid interpretations, missing approach-defining "
+            "constraints, or an irreversible fork). Like `tasks`, there can be "
+            "one or many — each an independent question with its own options. Do "
+            "not set when the request is trivial, clear, or a cheap default "
+            "exists. Never re-set once the user has chosen."
         ),
     )
     shared: list[Task] = Field(
@@ -75,6 +114,8 @@ class MessageState(TypedDict):
 class SupervisorState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     trivial: bool
+    clarify: Optional[list[ClarifyQuestion]]
+    clarify_choice: Optional[str]
     shared: list[Task]
     shared_context: Annotated[list[BaseMessage], add_messages]
     tasks: Annotated[list[Task], add]

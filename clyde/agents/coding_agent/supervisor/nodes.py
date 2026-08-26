@@ -1,14 +1,14 @@
 """Supervisor nodes: decompose the request, scout shared work, fan out, synthesize."""
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.types import Send
+from langgraph.types import Send, interrupt
 
-from llm import get_llm
+from clyde.llm import get_llm
 
-from agents.coding_agent.model import call_model
-from agents.coding_agent.prompts import PLANNER_PROMPT, SYNTHESIZE_PROMPT, system_prompt
-from agents.coding_agent.state import Plan, SupervisorState
-from agents.coding_agent.tools import call_tools
+from clyde.agents.coding_agent.model import call_model
+from clyde.agents.coding_agent.prompts import PLANNER_PROMPT, SYNTHESIZE_PROMPT, system_prompt
+from clyde.agents.coding_agent.state import Plan, SupervisorState
+from clyde.agents.coding_agent.tools import call_tools
 
 
 _base_llm = get_llm(temperature=0)
@@ -37,15 +37,25 @@ def _user_request(messages) -> str:
 
 
 def planner_node(state: SupervisorState):
-    """Decompose the request, or mark it trivial for a direct answer."""
+    """Decompose the request, ask for clarification, or mark it trivial."""
     request = _user_request(state["messages"])
+    # If the user already picked an option, fold it into the request so the
+    # re-plan sees it (and the prompt instructs: don't re-ask).
+    choice = state.get("clarify_choice")
+    if choice:
+        request = f"{request}\n\n[User's chosen option: {choice}]"
     plan = _planner_model.invoke(f"{PLANNER_PROMPT}\n\nRequest:\n{request}")
     if plan is None:
         raise RuntimeError(f"planner: produced no plan. Raw: {plan!r}")
 
+    if plan.clarify:
+        # Ambiguous + costly to guess: surface options BEFORE any work. No tasks,
+        # no plan text — the ask node interrupts, then we re-plan with the choice.
+        return {"clarify": plan.clarify, "trivial": False, "shared": [], "tasks": [], "messages": []}
+
     if plan.trivial:
         # No fan-out — the direct_answer node handles it in one LLM call.
-        return {"trivial": True, "shared": [], "tasks": [], "messages": []}
+        return {"trivial": True, "shared": [], "tasks": [], "messages": [], "clarify": None}
 
     if not plan.tasks:
         raise RuntimeError(f"planner: non-trivial but produced no tasks. Raw: {plan!r}")
@@ -58,11 +68,40 @@ def planner_node(state: SupervisorState):
         "shared": plan.shared,
         "tasks": plan.tasks,
         "messages": [AIMessage(content=plan_text)],
+        "clarify": None,
     }
 
 
+def ask_node(state: SupervisorState):
+    """Surface the clarification questions to the user and block for their picks.
+
+    `interrupt()` suspends the graph (state held by the checkpointer) and yields
+    the clarify payload — a list of questions, each with its own options — to
+    the caller. On resume, `interrupt()` returns the user's picks: a list of
+    chosen option labels, one per question, in order. We fold them into a single
+    `clarify_choice` string and clear `clarify` so the planner re-runs with all
+    choices folded into the request.
+    """
+    clarify = state.get("clarify") or []
+    if not clarify:
+        # Nothing to ask (e.g. resumed without a pending clarify) — proceed.
+        return {"clarify": None, "clarify_choice": None}
+    payload = [q.model_dump() for q in clarify]
+    choices = interrupt(payload)
+    # `choices` is a list of labels, one per question. Pair them with the
+    # questions so the re-planned request reads each question + its answer.
+    if not isinstance(choices, (list, tuple)):
+        choices = [choices]
+    lines = [
+        f"- {q['question']}: {c}" for q, c in zip(payload, choices)
+    ]
+    return {"clarify": None, "clarify_choice": "\n".join(lines)}
+
+
 def route_planner(state: SupervisorState) -> str:
-    """Trivial -> direct answer; otherwise -> scout."""
+    """Clarify -> ask; trivial -> direct answer; otherwise -> scout."""
+    if state.get("clarify"):
+        return "ask"
     return "direct_answer" if state.get("trivial") else "scout"
 
 
