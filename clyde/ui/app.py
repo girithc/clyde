@@ -25,9 +25,6 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.types import Command
-
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -56,6 +53,10 @@ class _TraceLine(Message):
     def __init__(self, event) -> None:
         self.event = event
         super().__init__()
+
+
+class _Ready(Message):
+    """Posted once the graph + LLM + MCP stack has finished building."""
 
 
 class _StreamChunk(Message):
@@ -362,11 +363,19 @@ class ClydeApp(App):
         Binding("escape", "cancel_model_edit", "Cancel", priority=True),
     ]
 
-    def __init__(self, graph, history, skills):
+    def __init__(self, builder):
         super().__init__()
-        self.graph = graph
-        self.history = history
-        self.skills = skills
+        self.builder = builder
+        # Heavy state — built in a background worker after the TUI paints so the
+        # app appears instantly instead of blocking on the langchain/langgraph
+        # import + graph compile (~1.2s). None until _Ready.
+        self.graph = None
+        self.history = None
+        self.skills = None
+        self.manager = None
+        self._built = False
+        self._warmup: Static | None = None
+        self._queued: dict | None = None  # message submitted before ready
         self._busy = False
         self._pending: list = []  # mid-turn messages, processed as a continuation
         self._pending_model: tuple | None = None  # (provider, model_id) applied after a turn
@@ -424,21 +433,75 @@ class ClydeApp(App):
         self.exit_hint = self.query_one("#exit-hint", Static)
         self.update_trace_status()
         self.update_mode_status()
-        self.update_model_status()
+        # Model label + vision gating need llm.CURRENT_*, which pulls in the
+        # langchain stack — defer to on__ready so the TUI paints first.
+        self.model_status.update("…")
         self._apply_edit_visibility()
-        # Vision gating: show the attach button only if the current model can
-        # see images. Recomputed live whenever the model switches.
-        self._vision = supports_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
         self._refresh_attach()
-        # Unknown to the pattern list? Ask the LLM in the background; the button
-        # appears if the probe says yes.
-        self.maybe_probe_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
-        # Proactive greeting: stream an LLM-generated, context-aware greet.
-        await self._start_greet()
+        # "Warming up" line shown until the background build finishes.
+        self._warmup = Static(Text("Clyde warming up…", style="dim"), classes="tline")
+        await self.transcript.append_live(self._warmup)
+        # Build the graph + LLM + MCP manager off the UI thread, then post _Ready.
+        self.run_worker(self._build_run, thread=True)
         self.input.focus()
         # Rotate the bottom-right hint between keybindings so each gets a turn.
         self._hint_index = 0
         self._hint_timer = self.set_interval(8, self._rotate_hint)
+
+    def _build_run(self) -> None:
+        """Background worker: run the heavy builder, then signal readiness."""
+        try:
+            graph, history, skills, manager = self.builder()
+        except Exception:
+            # If the build blows up, surface it and leave the app usable for exit.
+            self.post_message(_AgentContent("Clyde failed to start. Try `clyde login`."))
+            self.post_message(_TurnDone())
+            return
+        self.graph = graph
+        self.history = history
+        self.skills = skills
+        self.manager = manager
+        self._built = True
+        self.post_message(_Ready())
+
+    async def on__ready(self, message: _Ready) -> None:
+        # Drop the warming-up line.
+        if self._warmup is not None:
+            self._warmup.remove()
+            self._warmup = None
+        # Now that langchain/langgraph are loaded, set the model label + vision.
+        self._vision = supports_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
+        self._refresh_attach()
+        self.maybe_probe_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
+        self.update_model_status()
+        # If a message was typed during warmup, queue it behind the greeting.
+        if self._queued is not None:
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            from clyde.plugins.skills import match_skills  # local import avoids a cycle
+
+            item = self._queued
+            self._queued = None
+            parts = item.pop("parts")
+            if parts:
+                content: list[dict] = []
+                if item["text"]:
+                    content.append({"type": "text", "text": item["text"]})
+                content.extend(parts)
+                item["msg"] = HumanMessage(content=content)
+            else:
+                item["msg"] = HumanMessage(content=item["text"])
+            item["skills"] = [
+                SystemMessage(content=f"[Skill: {s.name}]\n{s.body}")
+                for s in match_skills(item["text"], self.skills)
+            ]
+            self._pending.append(item)
+        await self._start_greet()
+
+    def shutdown_manager(self) -> None:
+        """Stop the MCP manager if it was started (called from __main__ finally)."""
+        if self.manager is not None:
+            self.manager.shutdown()
 
     _HINTS = ("ctrl-c to exit", "shift-tab to cycle mode")
 
@@ -888,12 +951,14 @@ class ClydeApp(App):
         self._render_chip()
         self.input.focus()
 
-    def _build_human_message(self, text: str) -> HumanMessage:
+    def _build_human_message(self, text: str):
         """Build the user message, attaching any pending images as multimodal parts.
 
         Images are consumed here — the chip clears once they're folded into the
         message that enters the graph.
         """
+        from langchain_core.messages import HumanMessage
+
         if not self._image_parts:
             return HumanMessage(content=text)
         parts: list[dict] = []
@@ -918,6 +983,19 @@ class ClydeApp(App):
         if self._image_parts and not self._vision:
             self.notify("current model can't see images — attach cleared", timeout=4)
             self.clear_attachments()
+        # Still warming up (graph + LLM building in the background): stash the
+        # raw text + image parts and send once _Ready fires. Don't build the
+        # HumanMessage here — that would pull langchain_core into the UI thread.
+        if not self._built:
+            self.input.value = ""
+            images = list(self._image_names)
+            parts = list(self._image_parts)
+            self._image_parts = []
+            self._image_names = []
+            self._render_chip()
+            self._queued = {"text": text, "images": images, "parts": parts}
+            self.notify("warming up — your message will send when ready", timeout=3)
+            return
         self.input.value = ""
         images = list(self._image_names)
         msg = self._build_human_message(text)
@@ -925,6 +1003,8 @@ class ClydeApp(App):
             # Clyde is working (incl. the greeting): queue silently, don't render
             # yet. Rendered + processed only after the current action finishes, so
             # the transcript order stays clean (no interleaving with the stream).
+            from langchain_core.messages import SystemMessage
+
             from clyde.plugins.skills import match_skills  # local import avoids a cycle
 
             skills_msgs = [
@@ -995,6 +1075,7 @@ class ClydeApp(App):
         static greet if the LLM call fails so a session never hangs on greet.
         """
         from clyde.agents.coding_agent.greeting import build_greet_graph
+        from langchain_core.messages import AIMessage
 
         try:
             greet_graph = build_greet_graph()
@@ -1045,6 +1126,9 @@ class ClydeApp(App):
         checkpoint; omit it for a fresh turn. On interrupt, posts `_AskUser` and
         returns True without posting `_TurnDone` (the turn is paused, not done).
         """
+        from langchain_core.messages import AIMessage
+        from langgraph.types import Command
+
         inputs = Command(resume=resume) if resume is not None else {"messages": self.history}
         seen = len(self.history)
         last_values = None
@@ -1093,6 +1177,8 @@ class ClydeApp(App):
         return False
 
     def _turn(self, text: str, msg: HumanMessage) -> None:
+        from langchain_core.messages import SystemMessage
+
         from clyde.plugins.skills import match_skills  # local import avoids a cycle
 
         interrupted = False

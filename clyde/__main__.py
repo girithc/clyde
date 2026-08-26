@@ -37,28 +37,34 @@ def _run_tui() -> None:
         save_config({"provider": provider, "model_id": model_id})
         print(f"Active provider '{cfg.get('provider')}' has no key — switched to '{provider}'.")
 
-    # Heavy imports (these build the LLM at import time; safe now that a key exists).
-    from langchain_core.messages import SystemMessage
-
     import clyde.trace as _trace
-    from clyde.agents import default_graph as graph, default_system_prompt as system_prompt
-
-    import clyde.plugins.mcp as mcpmod
-    from clyde.plugins.mcp import McpManager
-    from clyde.plugins.skills import builtin_skills_dir, load_skills
     from clyde.ui import ClydeApp
 
-    # .mcp.json is per-project (CWD); a missing file just means no servers yet.
-    manager = McpManager.from_config(".mcp.json")
-    mcpmod.manager = manager  # management tools reach it via this singleton
-    manager.start()
-    manager._rebind()  # bind static + any pre-configured MCP tools
+    def _build():
+        """Heavy work, run in a background worker after the TUI paints so the
+        app appears instantly. Builds the LLM, compiles the graph, starts MCP,
+        and loads skills. Returns (graph, history, skills, manager)."""
+        from langchain_core.messages import SystemMessage
 
-    # Skills: bundled (ship with the package) + user (~/.clyde/skills).
-    skills = load_skills([builtin_skills_dir(), Path.home() / ".clyde" / "skills"])
+        from clyde.agents import default_graph as graph, default_system_prompt as system_prompt
 
-    history = [SystemMessage(content=system_prompt)]
-    app = ClydeApp(graph=graph, history=history, skills=skills)
+        import clyde.plugins.mcp as mcpmod
+        from clyde.plugins.mcp import McpManager
+        from clyde.plugins.skills import builtin_skills_dir, load_skills
+
+        # .mcp.json is per-project (CWD); a missing file just means no servers yet.
+        manager = McpManager.from_config(".mcp.json")
+        mcpmod.manager = manager  # management tools reach it via this singleton
+        manager.start()
+        manager._rebind()  # bind static + any pre-configured MCP tools
+
+        # Skills: bundled (ship with the package) + user (~/.clyde/skills).
+        skills = load_skills([builtin_skills_dir(), Path.home() / ".clyde" / "skills"])
+
+        history = [SystemMessage(content=system_prompt)]
+        return graph, history, skills, manager
+
+    app = ClydeApp(builder=_build)
 
     # Route trace lines into the TUI transcript (dimmed) instead of stdout.
     _trace.compact_trace.set_sink(app.post_trace)
@@ -66,7 +72,7 @@ def _run_tui() -> None:
     try:
         app.run()
     finally:
-        manager.shutdown()
+        app.shutdown_manager()
 
 
 def main() -> None:
