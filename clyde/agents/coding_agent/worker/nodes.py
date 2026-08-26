@@ -29,7 +29,7 @@ _verify_model = _base_llm.with_structured_output(VerifyVerdict, method="function
 def configure_model(provider, model_id):
     """Rebind the worker LLMs with a new provider + model (on model switch)."""
     global _base_llm, _plan_model, _verify_model
-    from llm import set_model
+    from clyde.llm import set_model
     set_model(provider, model_id)
     _base_llm = get_llm(provider, model_id, temperature=0)
     _plan_model = _base_llm.with_structured_output(Approach, method="function_calling")

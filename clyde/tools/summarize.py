@@ -19,7 +19,7 @@ _llm = get_llm(temperature=0)
 def configure_model(provider, model_id):
     """Rebind the summarize tool's LLM with a new provider + model (on model switch)."""
     global _llm
-    from llm import set_model
+    from clyde.llm import set_model
     set_model(provider, model_id)
     _llm = get_llm(provider, model_id, temperature=0)
 

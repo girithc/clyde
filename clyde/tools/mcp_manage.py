@@ -18,7 +18,7 @@ from langchain_core.tools import tool
 
 
 def _manager():
-    import plugins.mcp as mcpmod
+    import clyde.plugins.mcp as mcpmod
 
     m = mcpmod.manager
     if m is None:

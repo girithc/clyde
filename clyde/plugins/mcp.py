@@ -260,9 +260,9 @@ class McpManager:
         """Rebind the executor LLM + tool registry with static + current MCP tools."""
         with self._rebind_lock:
             try:
-                from tools import tools as static_tools
-                from agents.coding_agent.model import configure_executor
-                from agents.coding_agent.tools import configure_tools
+                from clyde.tools import tools as static_tools
+                from clyde.agents.coding_agent.model import configure_executor
+                from clyde.agents.coding_agent.tools import configure_tools
 
                 all_tools = list(static_tools) + self.all_tools()
                 configure_executor(all_tools)

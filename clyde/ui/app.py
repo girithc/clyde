@@ -543,13 +543,13 @@ class ClydeApp(App):
             self.notify(f"model: {model_id} (queued — applies after current turn)", timeout=3)
             return
         try:
-            from llm import set_model
-            from tools import tools as _static_tools
-            import plugins.mcp as _mcpmod
-            import agents.coding_agent.model as _model
-            import agents.coding_agent.supervisor.nodes as _sup
-            import agents.coding_agent.worker.nodes as _worker
-            import tools.summarize as _sum
+            from clyde.llm import set_model
+            from clyde.tools import tools as _static_tools
+            import clyde.plugins.mcp as _mcpmod
+            import clyde.agents.coding_agent.model as _model
+            import clyde.agents.coding_agent.supervisor.nodes as _sup
+            import clyde.agents.coding_agent.worker.nodes as _worker
+            import clyde.tools.summarize as _sum
 
             set_model(provider, model_id)
             mcp_tools = _mcpmod.manager.all_tools() if _mcpmod.manager is not None else []
@@ -832,7 +832,7 @@ class ClydeApp(App):
         once per model — an in-flight guard prevents duplicate probes during
         rapid model switching.
         """
-        from llm.registry import needs_vision_probe
+        from clyde.llm.registry import needs_vision_probe
 
         key = ((provider or "").lower(), (model_id or "").lower())
         if not needs_vision_probe(provider, model_id) or key in self._vision_probing:
@@ -841,7 +841,7 @@ class ClydeApp(App):
         self.run_worker(lambda: self._probe_vision_run(provider, model_id, key), thread=True)
 
     def _probe_vision_run(self, provider: str, model_id: str, key: tuple[str, str]) -> None:
-        from llm.registry import probe_vision
+        from clyde.llm.registry import probe_vision
 
         try:
             result = probe_vision(provider, model_id)
@@ -923,7 +923,7 @@ class ClydeApp(App):
             # Clyde is working (incl. the greeting): queue silently, don't render
             # yet. Rendered + processed only after the current action finishes, so
             # the transcript order stays clean (no interleaving with the stream).
-            from plugins.skills import match_skills  # local import avoids a cycle
+            from clyde.plugins.skills import match_skills  # local import avoids a cycle
 
             skills_msgs = [
                 SystemMessage(content=f"[Skill: {s.name}]\n{s.body}")
@@ -992,7 +992,7 @@ class ClydeApp(App):
         Not part of conversation_history (display only). Falls back to a
         static greet if the LLM call fails so a session never hangs on greet.
         """
-        from agents.coding_agent.greeting import build_greet_graph
+        from clyde.agents.coding_agent.greeting import build_greet_graph
 
         try:
             greet_graph = build_greet_graph()
@@ -1091,7 +1091,7 @@ class ClydeApp(App):
         return False
 
     def _turn(self, text: str, msg: HumanMessage) -> None:
-        from plugins.skills import match_skills  # local import avoids a cycle
+        from clyde.plugins.skills import match_skills  # local import avoids a cycle
 
         interrupted = False
         try:

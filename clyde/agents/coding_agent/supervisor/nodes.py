@@ -18,7 +18,7 @@ _planner_model = _base_llm.with_structured_output(Plan, method="function_calling
 def configure_model(provider, model_id):
     """Rebind the supervisor LLMs with a new provider + model (on model switch)."""
     global _base_llm, _planner_model
-    from llm import set_model
+    from clyde.llm import set_model
     set_model(provider, model_id)
     _base_llm = get_llm(provider, model_id, temperature=0)
     _planner_model = _base_llm.with_structured_output(Plan, method="function_calling")

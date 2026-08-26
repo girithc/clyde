@@ -23,7 +23,7 @@ def configure_executor(tool_list):
 def configure_model(provider, model_id, tool_list):
     """Rebind the executor LLM with a new provider + model (called on model switch)."""
     global llm
-    from llm import set_model
+    from clyde.llm import set_model
     set_model(provider, model_id)
     llm = get_llm(provider, model_id, temperature=0).bind_tools(tool_list)
 

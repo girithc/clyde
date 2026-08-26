@@ -130,7 +130,7 @@ def probe_vision(provider: str, model_id: str) -> bool:
     try:
         from langchain_core.messages import HumanMessage
 
-        from llm import get_llm
+        from clyde.llm import get_llm
 
         probe_llm = get_llm(temperature=0)
         resp = probe_llm.invoke([HumanMessage(content=prompt)])
