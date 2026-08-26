@@ -40,9 +40,32 @@ class CompactTraceHandler(BaseCallbackHandler):
     def on_llm_end(self, response, *, run_id, **kwargs):
         started = self._llm_starts.pop(str(run_id), None)
         secs = f"{time.time() - started:.2f}s" if started else "?s"
-        usage = (response.llm_output or {}).get("token_usage", {})
-        in_toks = usage.get("prompt_tokens", "?")
-        out_toks = usage.get("completion_tokens", "?")
+        usage = (response.llm_output or {}).get("token_usage", {}) or {}
+        in_toks = usage.get("prompt_tokens") or usage.get("input_tokens")
+        out_toks = usage.get("completion_tokens") or usage.get("output_tokens")
+        # Streaming responses usually leave llm_output.token_usage empty; the
+        # counts arrive on the final AIMessage instead (usage_metadata for
+        # langchain-core >=0.2, response_metadata.token_usage otherwise).
+        if in_toks is None or out_toks is None:
+            try:
+                msg = response.generations[0][0].message
+            except (IndexError, AttributeError):
+                msg = None
+            if msg is not None:
+                um = getattr(msg, "usage_metadata", None) or {}
+                if in_toks is None:
+                    in_toks = um.get("input_tokens")
+                if out_toks is None:
+                    out_toks = um.get("output_tokens")
+                if in_toks is None or out_toks is None:
+                    rm = getattr(msg, "response_metadata", None) or {}
+                    tu = rm.get("token_usage") or rm.get("usage") or {}
+                    if in_toks is None:
+                        in_toks = tu.get("prompt_tokens") or tu.get("input_tokens")
+                    if out_toks is None:
+                        out_toks = tu.get("completion_tokens") or tu.get("output_tokens")
+        in_toks = "?" if in_toks is None else in_toks
+        out_toks = "?" if out_toks is None else out_toks
         finish = None
         try:
             gen = response.generations[0][0]

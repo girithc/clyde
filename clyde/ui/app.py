@@ -21,30 +21,33 @@ from __future__ import annotations
 import base64
 import mimetypes
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.types import Command
 
 from rich.markdown import Markdown
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.message import Message
 from textual.widgets import Button, Input, Select, Static
 
-import llm
-from llm.registry import PROVIDERS, supports_vision
-from ui.filepicker import pick_image_native
-from ui.renderer import (
+import clyde.llm as llm
+from clyde.llm.registry import PROVIDERS, supports_vision
+from clyde.ui.filepicker import pick_image_native
+from clyde.ui.renderer import (
     agent_renderable,
     spacer_renderable,
     user_renderable,
 )
-from ui.thinking import ThinkingIndicator
-from ui.trace_full import full_trace_renderable
-from ui.trace_minimal import minimal_trace_renderable
-from ui.transcript import Transcript
+from clyde.ui.thinking import ThinkingIndicator
+from clyde.ui.trace_full import full_trace_renderable
+from clyde.ui.trace_minimal import minimal_trace_renderable
+from clyde.ui.transcript import Transcript
 
 
 # --- worker -> UI messages (posted from the turn thread, handled on the UI thread) ---
@@ -86,6 +89,68 @@ class _FilePicked(Message):
     def __init__(self, path: str | None) -> None:
         self.path = path
         super().__init__()
+
+
+class _AskUser(Message):
+    """Posted from the turn thread when the planner asks for clarification.
+
+    Carries the clarify payload: a list of questions, each with its own options
+    ({label, description, recommended}). The UI renders one option group per
+    question and collects one pick per question.
+    """
+
+    def __init__(self, questions: list[dict]) -> None:
+        self.questions = questions
+        super().__init__()
+
+
+class OptionButton(Static):
+    """A clickable clarification option: label + dim description subtitle.
+
+    `variant` is "rec" | "opt" | "chat" | "continue" | "confirm". `q_index` is
+    the question this option belongs to (-1 for the global actions). `choice`
+    is the string resumed into the graph when picked (the option label; empty
+    for chat/continue/confirm).
+    """
+
+    def __init__(
+        self, label: str, description: str, variant: str, choice: str, q_index: int = -1
+    ) -> None:
+        super().__init__("")
+        self.label = label
+        self.description = description
+        self.variant = variant
+        self.choice = choice
+        self.q_index = q_index
+        self.selected = False
+        self._render_content()
+
+    def _render_content(self) -> None:
+        if self.variant in ("chat", "continue", "confirm"):
+            head = Text(self.label)
+        else:
+            marker = "★ " if self.variant == "rec" else "  "
+            sel = "✓ " if self.selected else ""
+            head = Text(
+                f"{sel}{marker}{self.label}",
+                style="bold" if (self.variant == "rec" or self.selected) else "",
+            )
+            if self.description:
+                head = Text.assemble(
+                    head, "\n", Text(f"    {self.description}", style="dim")
+                )
+        self.update(head)
+
+    def set_selected(self, selected: bool) -> None:
+        self.selected = selected
+        self._render_content()
+        if selected:
+            self.add_class("sel")
+        else:
+            self.remove_class("sel")
+
+    async def on_click(self, event) -> None:
+        await self.app._on_option_clicked(self)
 
 
 class TraceStatus(Static):
@@ -245,6 +310,41 @@ Screen {
     min-width: 0;
     text-align: right;
 }
+OptionButton {
+    height: auto;
+    padding: 0 1;
+    margin: 0 0 0 0;
+    color: $text;
+}
+OptionButton:hover {
+    background: $boost;
+    text-style: bold;
+}
+OptionButton.rec {
+    color: $accent;
+    text-style: bold;
+}
+OptionButton.rec:hover {
+    background: $boost;
+}
+OptionButton.chat {
+    color: $text-muted;
+}
+OptionButton.continue {
+    color: $accent;
+    text-style: bold;
+}
+OptionButton.continue:disabled {
+    color: $text-disabled;
+    text-style: none;
+}
+OptionButton.confirm {
+    color: $accent;
+    text-style: bold;
+}
+OptionButton.sel {
+    background: $boost;
+}
 """
 
 # Throttle live stream updates so we don't post a message per token.
@@ -270,6 +370,12 @@ class ClydeApp(App):
         self._busy = False
         self._pending: list = []  # mid-turn messages, processed as a continuation
         self._pending_model: tuple | None = None  # (provider, model_id) applied after a turn
+        self._turn_config: dict | None = None  # {"configurable": {"thread_id": ...}, ...}
+        self._awaiting_choice = False  # True while a clarify prompt is on screen
+        self._ask_groups: list[list[OptionButton]] = []  # option buttons per question
+        self._ask_selections: list[OptionButton | None] = []  # chosen button per question
+        self._ask_questions: list[dict] = []  # the clarify questions being answered
+        self._continue_btn: OptionButton | None = None  # confirm button
         self.trace_mode = "none"  # "none" | "minimal" | "full"
         self.agent_mode = "auto"  # "auto" | "plan" | "ask" (UI state only)
         self._edit_model = False  # inline model-edit mode in the input bar
@@ -494,31 +600,195 @@ class ClydeApp(App):
         self.streaming.update(message.text)
 
     async def on__agent_content(self, message: _AgentContent) -> None:
-        # Freeze the streaming widget into the rendered Markdown answer.
+        # Freeze the streaming widget into the rendered Markdown answer, then add
+        # the trailing gap here so every conversation message owns its own spacer
+        # at render time (no reliance on a later _TurnDone for the gap).
         if self.streaming is None:
             await self.transcript.append(agent_renderable(message.text))
         else:
             self.streaming.update(agent_renderable(message.text))
             self.streaming = None
+        await self.transcript.append(spacer_renderable())
 
     async def on__turn_done(self, message: _TurnDone) -> None:
         # Settle the indicator inline to "Thought for Xs" and leave it there.
         if self.indicator is not None:
             self.indicator.done()
             self.indicator = None
+        # No spacer here: each conversation/live message (user, indicator, answer)
+        # owns its own trailing gap at render time, so the block is already spaced.
         # Apply a deferred model switch now that the turn is done.
         if self._pending_model is not None:
             provider, model_id = self._pending_model
             self._pending_model = None
             self._apply_model(provider, model_id)
             return
-        # Continue with any mid-turn messages (seamless, no new-turn framing).
+        # Continue with any messages queued while Clyde was busy. Render each
+        # queued user line now (in order, with a gap) so they appear after the
+        # prior answer instead of interleaved with its stream.
         if self._pending:
-            self.history.extend(self._pending)
+            for item in self._pending:
+                for s in item["skills"]:
+                    self.history.append(s)
+                self.history.append(item["msg"])
+                await self.transcript.append(
+                    user_renderable(item["text"], item["images"])
+                )
+                await self.transcript.append(spacer_renderable())
             self._pending = []
             await self._start_continue()
         else:
             self._busy = False
+            self._refresh_attach()
+
+    # --- clarify / ask-the-user (interrupt-based) ---
+
+    async def on__ask_user(self, message: _AskUser) -> None:
+        """Render each clarifying question + its options, then a Continue button.
+
+        The turn is paused at the graph's interrupt(); self._busy stays True so
+        any input typed while waiting queues (processed after the resumed turn).
+        """
+        # Stop the thinking spinner while we wait for picks.
+        if self.indicator is not None:
+            self.indicator.hide()
+            self.indicator = None
+
+        questions = list(message.questions or [])
+        self._ask_questions = questions
+        self._ask_groups = []
+        self._ask_selections = [None] * len(questions)
+
+        for qi, q in enumerate(questions):
+            await self.transcript.append(
+                Static(Text(f"❓ {q.get('question', '')}", style="bold yellow"))
+            )
+            await self.transcript.append(spacer_renderable())
+            opts = list(q.get("options") or [])
+            opts.sort(key=lambda o: 0 if o.get("recommended") else 1)
+            group: list[OptionButton] = []
+            for o in opts:
+                variant = "rec" if o.get("recommended") else "opt"
+                btn = OptionButton(
+                    o.get("label", ""),
+                    o.get("description", ""),
+                    variant,
+                    o.get("label", ""),
+                    q_index=qi,
+                )
+                btn.add_class(variant)
+                await self.transcript.append_live(btn)
+                group.append(btn)
+            await self.transcript.append(spacer_renderable())
+            self._ask_groups.append(group)
+
+        # Continue: confirm all picks and resume. Disabled until every question
+        # has a selection.
+        cont = OptionButton("Continue", "", "continue", "")
+        cont.add_class("continue")
+        cont.disabled = True
+        await self.transcript.append_live(cont)
+        self._continue_btn = cont
+        # Chat about this: abandon, return to free input.
+        chat = OptionButton("Chat about this", "", "chat", "")
+        chat.add_class("chat")
+        await self.transcript.append_live(chat)
+        await self.transcript.append(spacer_renderable())
+        self._awaiting_choice = True
+
+    def _refresh_continue(self) -> None:
+        """Enable Continue only when every question has a selection."""
+        if self._continue_btn is None:
+            return
+        self._continue_btn.disabled = not all(
+            sel is not None for sel in self._ask_selections
+        )
+
+    async def _show_review(self) -> None:
+        """Render a review screen: each question (white) + chosen answer (green),
+        then a Confirm button. Confirm resumes the paused graph with all picks.
+        """
+        for qi, sel in enumerate(self._ask_selections):
+            q = self._ask_questions[qi].get("question", "") if qi < len(self._ask_questions) else ""
+            answer = sel.choice if sel is not None else "(none)"
+            await self.transcript.append(
+                Static(Text(q, style="bold white"))
+            )
+            await self.transcript.append(Static(Text(answer, style="green")))
+            await self.transcript.append(spacer_renderable())
+        confirm = OptionButton("Confirm", "", "confirm", "")
+        confirm.add_class("confirm")
+        await self.transcript.append_live(confirm)
+        await self.transcript.append(spacer_renderable())
+
+    async def _on_option_clicked(self, button: OptionButton) -> None:
+        """Called from OptionButton.on_click — route the pick."""
+        if not self._awaiting_choice:
+            return
+        if button.variant == "chat":
+            self._awaiting_choice = False
+            self._abandon_ask(notify="type your question")
+            return
+        if button.variant == "continue":
+            if button.disabled:
+                return
+            await self._show_review()
+            return
+        if button.variant == "confirm":
+            self._awaiting_choice = False
+            choices = [
+                sel.choice if sel is not None else "" for sel in self._ask_selections
+            ]
+            await self._resume_turn(choices)
+            return
+        # An option within a question group: record the selection.
+        qi = button.q_index
+        prev = self._ask_selections[qi]
+        if prev is not None:
+            prev.set_selected(False)
+        button.set_selected(True)
+        self._ask_selections[qi] = button
+        self._refresh_continue()
+
+    def _abandon_ask(self, notify: str) -> None:
+        """Drop the paused turn (no resume); orphaned checkpoint is harmless."""
+        self._turn_config = None
+        self._busy = False
+        self._awaiting_choice = False
+        self._ask_groups = []
+        self._ask_selections = []
+        self._ask_questions = []
+        self._continue_btn = None
+        # Drop input typed while the ask was on screen — it was meant for a turn
+        # we're now abandoning, and leaving it would leak into a later turn.
+        self._pending = []
+        self._refresh_attach()
+        self.input.focus()
+        self.notify(notify, timeout=3)
+
+    async def _resume_turn(self, choices: list[str]) -> None:
+        """Continue the paused graph with the user's picks (one per question)."""
+        self._busy = True
+        self._refresh_attach()
+        self.streaming = None
+        self._ask_groups = []
+        self._ask_selections = []
+        self._ask_questions = []
+        self._continue_btn = None
+        # Reuse the same thread_id config so the graph resumes from checkpoint.
+        self.indicator = ThinkingIndicator()
+        await self.transcript.append_live(self.indicator)
+        self.indicator.start()
+        await self.transcript.append(spacer_renderable())
+        self.run_worker(lambda: self._resume_run(choices), thread=True)
+
+    def _resume_run(self, choices: list[str]) -> None:
+        interrupted = False
+        try:
+            interrupted = self._stream(resume=choices)
+        finally:
+            if not interrupted:
+                self.post_message(_TurnDone())
             self._refresh_attach()
 
     # --- trace sink target (called from main.py on the worker/MCP threads) ---
@@ -649,29 +919,46 @@ class ClydeApp(App):
         self.input.value = ""
         images = list(self._image_names)
         msg = self._build_human_message(text)
-        await self.transcript.append(user_renderable(text, images))
-        await self.transcript.append(spacer_renderable())
         if self._busy:
-            # Mid-turn: surface inline now, process as a continuation after.
+            # Clyde is working (incl. the greeting): queue silently, don't render
+            # yet. Rendered + processed only after the current action finishes, so
+            # the transcript order stays clean (no interleaving with the stream).
             from plugins.skills import match_skills  # local import avoids a cycle
 
-            pending = []
-            for skill in match_skills(text, self.skills):
-                pending.append(
-                    SystemMessage(content=f"[Skill: {skill.name}]\n{skill.body}")
-                )
-            pending.append(msg)
-            self._pending.extend(pending)
+            skills_msgs = [
+                SystemMessage(content=f"[Skill: {s.name}]\n{s.body}")
+                for s in match_skills(text, self.skills)
+            ]
+            self._pending.append(
+                {"text": text, "images": images, "msg": msg, "skills": skills_msgs}
+            )
         else:
+            await self.transcript.append(user_renderable(text, images))
+            await self.transcript.append(spacer_renderable())
             await self._start_turn(text, msg)
+
+    def _new_turn_config(self) -> dict:
+        """Fresh thread_id per turn so each request starts a clean checkpoint.
+
+        A resume after a clarify reuses this same config (same thread_id) so the
+        graph continues from the paused checkpoint instead of restarting.
+        """
+        self._turn_config = {
+            "configurable": {"thread_id": str(uuid.uuid4())},
+            "recursion_limit": 100,
+        }
+        return self._turn_config
 
     async def _start_turn(self, text: str, msg: HumanMessage) -> None:
         self._busy = True
         self._refresh_attach()
         self.streaming = None
+        self._new_turn_config()
         self.indicator = ThinkingIndicator()
         await self.transcript.append_live(self.indicator)
         self.indicator.start()
+        # One-line gap after the live thinking indicator.
+        await self.transcript.append(spacer_renderable())
         self.run_worker(lambda: self._turn(text, msg), thread=True)
 
     async def _start_continue(self) -> None:
@@ -679,9 +966,12 @@ class ClydeApp(App):
         self._busy = True
         self._refresh_attach()
         self.streaming = None
+        self._new_turn_config()
         self.indicator = ThinkingIndicator()
         await self.transcript.append_live(self.indicator)
         self.indicator.start()
+        # One-line gap after the live thinking indicator.
+        await self.transcript.append(spacer_renderable())
         self.run_worker(self._continue_run, thread=True)
 
     async def _start_greet(self) -> None:
@@ -692,6 +982,8 @@ class ClydeApp(App):
         self.indicator = ThinkingIndicator()
         await self.transcript.append_live(self.indicator)
         self.indicator.start()
+        # One-line gap after the live thinking indicator.
+        await self.transcript.append(spacer_renderable())
         self.run_worker(self._greet_run, thread=True)
 
     def _greet_run(self) -> None:
@@ -744,7 +1036,14 @@ class ClydeApp(App):
 
     # --- one turn, runs in a worker thread (sync) ---
 
-    def _stream(self) -> None:
+    def _stream(self, resume: str | None = None) -> bool:
+        """Stream one graph execution. Returns True if it paused on a clarify interrupt.
+
+        `resume` is the user's chosen option label when continuing from a paused
+        checkpoint; omit it for a fresh turn. On interrupt, posts `_AskUser` and
+        returns True without posting `_TurnDone` (the turn is paused, not done).
+        """
+        inputs = Command(resume=resume) if resume is not None else {"messages": self.history}
         seen = len(self.history)
         last_values = None
         buffer = ""
@@ -752,11 +1051,21 @@ class ClydeApp(App):
         last_post = 0.0
 
         for mode, data in self.graph.stream(
-            {"messages": self.history},
-            stream_mode=["messages", "values"],
-            config={"recursion_limit": 100},
+            inputs,
+            stream_mode=["messages", "values", "updates"],
+            config=self._turn_config,
         ):
-            if mode == "messages":
+            if mode == "updates":
+                # Interrupts surface here as {"__interrupt__": [Interrupt(...)]}.
+                if isinstance(data, dict) and "__interrupt__" in data:
+                    intr = data["__interrupt__"][0]
+                    val = getattr(intr, "value", None) or []
+                    self.post_message(_AskUser(val))
+                    if last_values is not None:
+                        self.history = last_values["messages"]
+                    return True
+                continue
+            elif mode == "messages":
                 chunk, cmeta = data
                 content = getattr(chunk, "content", "")
                 if not content:
@@ -779,23 +1088,28 @@ class ClydeApp(App):
 
         if last_values is not None:
             self.history = last_values["messages"]
+        return False
 
     def _turn(self, text: str, msg: HumanMessage) -> None:
         from plugins.skills import match_skills  # local import avoids a cycle
 
+        interrupted = False
         try:
             for skill in match_skills(text, self.skills):
                 self.history.append(
                     SystemMessage(content=f"[Skill: {skill.name}]\n{skill.body}")
                 )
             self.history.append(msg)
-            self._stream()
+            interrupted = self._stream()
         finally:
-            self.post_message(_TurnDone())
+            if not interrupted:
+                self.post_message(_TurnDone())
 
     def _continue_run(self) -> None:
         # Pending messages are already in self.history; just run the graph.
+        interrupted = False
         try:
-            self._stream()
+            interrupted = self._stream()
         finally:
-            self.post_message(_TurnDone())
+            if not interrupted:
+                self.post_message(_TurnDone())

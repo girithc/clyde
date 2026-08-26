@@ -13,13 +13,17 @@ from rich.text import Text
 
 
 def agent_renderable(text: str) -> Markdown:
-    """The agent's Markdown answer — rendered headers/bold/tables/lists."""
-    return Markdown(text or "")
+    """The agent's Markdown answer — rendered headers/bold/tables/lists.
+
+    Prose is tinted green so Clyde's responses read as a distinct voice from the
+    user's cyan-bold lines; fenced code blocks keep their syntax theme (monokai).
+    """
+    return Markdown(text or "", style="green")
 
 
 def user_renderable(text: str, images: list[str] | None = None) -> Text:
-    """A bold user line, with any attached image filenames shown inline."""
-    line = Text(f"> {text}", style="bold")
+    """A cyan-bold user line, with any attached image filenames shown inline."""
+    line = Text(f"> {text}", style="bold cyan")
     for name in images or []:
         line.append(f"  🖼 {name}", style="bold cyan")
     return line

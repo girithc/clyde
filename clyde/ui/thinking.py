@@ -89,9 +89,10 @@ class ThinkingIndicator(Static):
         spinner = _SPINNER[self._frame % len(_SPINNER)]
         word = _WORDS[self._word_idx % len(_WORDS)]
         elapsed = int(time.monotonic() - self._started_at) if self._started_at else 0
+        tokens = f" · ↓ {_fmt_tokens(self._tokens)} tokens" if self._tokens else ""
         return Text(
-            f"{spinner} {word}… ({elapsed}s · ↓ {_fmt_tokens(self._tokens)} tokens)",
-            style="cyan",
+            f"{spinner} {word}… ({elapsed}s{tokens})",
+            style="dim",
         )
 
     def _tick(self) -> None:
@@ -126,10 +127,11 @@ class ThinkingIndicator(Static):
         dur = time.monotonic() - self._started_at
         self._started_at = 0.0
         self.visible = True
+        tokens = f" · ↓ {_fmt_tokens(self._tokens)} tokens" if self._tokens else ""
         self.update(
             Text(
-                f"Thought for {dur:.1f}s · ↓ {_fmt_tokens(self._tokens)} tokens",
-                style="cyan",
+                f"Thought for {dur:.1f}s{tokens}",
+                style="dim",
             )
         )
 
