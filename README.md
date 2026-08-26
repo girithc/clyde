@@ -1,6 +1,6 @@
 # Clyde
 
-A terminal coding agent that combines the **observability, tracing, and customizability** of the DeepSeek harness with the **simplicity** of Claude Code — and makes it all available out of the box, with zero learning curve.
+A terminal coding agent that combines the **observability, tracing, and customizability** of the DeepSeek harness with the **simplicity** of Claude Code — and makes it all available out of the box.
 
 Everything Clyde can do is visible on the UI. There are no slash commands to memorize; you just talk to it.
 
@@ -17,11 +17,11 @@ Two things, fused together:
 - **The DeepSeek harness** — for its observability, structured tracing, and deep customizability. You should always be able to see what the agent is doing underneath, and you should be able to bend it to your workflow.
 - **Claude Code** — for its simplicity. One input bar, one scrolling transcript, an inline "thinking" line that lives in the conversation like any other message. No modal panels, no cognitive overhead.
 
-Clyde takes the transparency and tunability of the first and the ergonomics of the second, then removes the learning curve: every capability is surfaced as a clickable visual shortcut on the input bar.
+Clyde takes the transparency and tunability of the first and the ergonomics of the second: every capability is surfaced as a clickable visual shortcut on the input bar.
 
 ## Is it easy for new users?
 
-Yes — by design. There is no learning curve.
+Yes — by design.
 
 - **No slash commands.** Nothing to memorize. You converse with Clyde in plain language and it does the rest, including managing its own plugins and MCP servers.
 - **Everything is on the UI.** The bottom status bar shows the current trace mode, agent mode, and model — each clickable to change it. The `+` button attaches images. The model label opens an inline editor to switch providers and model ids. The bottom-right hint rotates between keybindings so you discover them naturally.
@@ -30,44 +30,42 @@ Yes — by design. There is no learning curve.
 ## How do I install Clyde?
 
 ```bash
-git clone <your-repo-url> clyde
-cd clyde
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pipx install clyde-ai
 ```
+
+`pipx` installs the `clyde` command in an isolated venv and puts it on your PATH. No clone, no venv, no `pip install -r requirements.txt`. (No `pipx`? `brew install pipx` on macOS, or `python -m pip install --user pipx`.)
 
 ## How do I configure my API key?
 
-Create a `.env` file in the project root with the key for the provider you want to use:
+Keys live in your **OS keychain** (macOS Keychain via `keyring`) — no `.env` file, no env-var fallback, no plaintext on disk. Set them with the built-in login command:
 
-```dotenv
-FIREWORKS_API_KEY=...
-ANTHROPIC_API_KEY=...
-OPENAI_API_KEY=...
-OPENROUTER_API_KEY=...
+```bash
+clyde login              # interactive: pick provider(s), paste key(s)
+clyde login fireworks    # one-shot: set a single provider's key
+clyde auth               # show which providers have keys + the active one
+clyde logout fireworks   # remove a key (clyde logout --all clears every key)
 ```
 
-Only the key for your active provider is required. Clyde loads `.env` automatically at startup. (`.env` is gitignored — never commit secrets.)
+Only the key for your active provider is required. The default provider is Fireworks; if its key is missing on startup, Clyde auto-switches to the first provider you *have* a key for. A provider's connector package is imported lazily — you only need the langchain package for the provider you actually use (e.g. `pipx inject clyde-ai langchain-anthropic` for Anthropic).
 
 ## How do I run Clyde?
 
 ```bash
-python main.py
+clyde
 ```
 
 A proactive, context-aware greeting streams in first, then you type at the input bar. Type `exit` or press `Ctrl+C` to quit.
 
 ## Which model providers does Clyde support?
 
-Clyde is provider-agnostic via LangChain. Built-in providers (defined in `llm/registry.py`):
+Clyde is provider-agnostic via LangChain. Built-in providers (defined in `clyde/llm/registry.py`):
 
-| Provider | Connector | Key env var |
-|----------|-----------|-------------|
-| Fireworks | `langchain_fireworks` | `FIREWORKS_API_KEY` |
-| Anthropic | `langchain_anthropic` | `ANTHROPIC_API_KEY` |
-| OpenAI | `langchain_openai` | `OPENAI_API_KEY` |
-| OpenRouter | `langchain_openai` (OpenAI-compatible) | `OPENROUTER_API_KEY` |
+| Provider | Connector | Login name |
+|----------|-----------|------------|
+| Fireworks | `langchain_fireworks` | `fireworks` |
+| Anthropic | `langchain_anthropic` | `anthropic` |
+| OpenAI | `langchain_openai` | `openai` |
+| OpenRouter | `langchain_openai` (OpenAI-compatible) | `openrouter` |
 
 ## Can I use any model?
 
@@ -142,7 +140,7 @@ description: >
 Respond terse like smart caveman...
 ```
 
-Clyde scans `./plugins`, parses the frontmatter, and on each turn injects the body of any skill whose triggers match your input as a system message. Triggers are extracted heuristically from the description (quoted phrases plus the skill name), so authors phrase them as prose, not a structured list. Skills are pure text with no runtime — and because add/remove is conversational and built in, you're never stuck with one.
+Clyde scans two locations — the skills bundled with the package (`clyde/skills`) and your user dir (`~/.clyde/skills`) — parses the frontmatter, and on each turn injects the body of any skill whose triggers match your input as a system message. Triggers are extracted heuristically from the description (quoted phrases plus the skill name), so authors phrase them as prose, not a structured list. Skills are pure text with no runtime — and because add/remove is conversational and built in, you're never stuck with one.
 
 ## Are there slash commands?
 
@@ -192,18 +190,20 @@ The bottom-right hint rotates between these every few seconds so you discover th
 
 ## Where is configuration stored?
 
-- `.env` — API keys (gitignored, never committed).
-- `.mcp.json` — MCP server config, written/updated by the management tools at runtime.
+- **OS keychain** — API keys (service `clyde`), set via `clyde login`. No plaintext on disk.
+- `.mcp.json` — MCP server config, written/updated by the management tools at runtime (per-project, in CWD).
 - `~/.clyde/config.json` — user preferences (chosen provider + model id), persists across sessions.
+- `~/.clyde/skills` — your personal skills (markdown), loaded alongside the bundled ones.
 
 ## What does the project structure look like?
 
 ```
 clyde/
-├── main.py                     # entry point: MCP manager, skills, TUI
+├── __main__.py                 # entry point: `clyde` console script — MCP manager, skills, TUI
+├── __init__.py                 # __version__ (single source of truth; pyproject reads it)
+├── auth.py                     # OS-keychain credential storage + login/logout/auth CLI
 ├── config.py                   # ~/.clyde/config.json persistence
 ├── trace.py                    # compact one-line-per-event trace handler
-├── requirements.txt
 ├── llm/
 │   ├── registry.py             # provider registry + vision detection/probe
 │   └── factory.py              # lazy provider-agnostic LLM factory
@@ -330,11 +330,9 @@ Run agents in the cloud 24×7 with high availability, instead of only locally in
 ## What's the quickstart in one block?
 
 ```bash
-git clone <your-repo-url> clyde && cd clyde
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-printf 'FIREWORKS_API_KEY=...\n' > .env
-python main.py
+pipx install clyde-ai
+clyde login fireworks      # paste your Fireworks API key (stored in the OS keychain)
+clyde
 ```
 
 Then just talk to Clyde. Ask it to add an MCP server, switch models, turn on full trace, or write some code — no slash commands, no manual config.
