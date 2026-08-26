@@ -35,6 +35,14 @@ pipx install clyde-ai
 
 `pipx` installs the `clyde` command in an isolated venv and puts it on your PATH. No clone, no venv, no `pip install -r requirements.txt`. (No `pipx`? `brew install pipx` on macOS, or `python -m pip install --user pipx`.)
 
+## How do I uninstall Clyde?
+
+```bash
+pipx uninstall clyde-ai && uv cache clean clyde-ai
+```
+
+`pipx uninstall` removes the venv; `uv cache clean clyde-ai` clears clyde-ai's cached wheels + index entries from uv's shared cache so a later reinstall is truly fresh. (If you hit a stale version right after a release, install with `UV_NO_CACHE=1 pipx install clyde-ai` to bypass the cache for that one run.)
+
 ## How do I configure my API key?
 
 Keys live in your **OS keychain** (macOS Keychain via `keyring`) — no `.env` file, no env-var fallback, no plaintext on disk. Set them with the built-in login command:
