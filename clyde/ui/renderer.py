@@ -15,10 +15,10 @@ from rich.text import Text
 def agent_renderable(text: str) -> Markdown:
     """The agent's Markdown answer — rendered headers/bold/tables/lists.
 
-    Prose is tinted green so Clyde's responses read as a distinct voice from the
+    Prose is white so Clyde's responses read as a distinct voice from the
     user's cyan-bold lines; fenced code blocks keep their syntax theme (monokai).
     """
-    return Markdown(text or "", style="green")
+    return Markdown(text or "", style="white")
 
 
 def user_renderable(text: str, images: list[str] | None = None) -> Text:
