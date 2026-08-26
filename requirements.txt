@@ -1,8 +1,8 @@
 langchain-core
 langchain-fireworks
 langgraph
-python-dotenv
 langchain-mcp-adapters
 pyyaml
 rich
 textual
+keyring
