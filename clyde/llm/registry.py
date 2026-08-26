@@ -18,24 +18,29 @@ class Provider:
     module: str
     cls: str
     api_key_env: str
+    default_model: str
     base_url: str | None = None  # OpenAI-compatible providers (e.g. OpenRouter)
 
 
 # provider name -> connector config
 PROVIDERS: dict[str, Provider] = {
     "fireworks": Provider(
-        "langchain_fireworks", "ChatFireworks", "FIREWORKS_API_KEY"
+        "langchain_fireworks", "ChatFireworks", "FIREWORKS_API_KEY",
+        "accounts/fireworks/models/deepseek-v4-flash-0731",
     ),
     "anthropic": Provider(
-        "langchain_anthropic", "ChatAnthropic", "ANTHROPIC_API_KEY"
+        "langchain_anthropic", "ChatAnthropic", "ANTHROPIC_API_KEY",
+        "claude-sonnet-5",
     ),
     "openai": Provider(
-        "langchain_openai", "ChatOpenAI", "OPENAI_API_KEY"
+        "langchain_openai", "ChatOpenAI", "OPENAI_API_KEY",
+        "gpt-4o",
     ),
     "openrouter": Provider(
         "langchain_openai",
         "ChatOpenAI",
         "OPENROUTER_API_KEY",
+        "anthropic/claude-3.5-sonnet",
         "https://openrouter.ai/api/v1",
     ),
 }

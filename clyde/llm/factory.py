@@ -14,27 +14,23 @@ from __future__ import annotations
 import importlib
 import os
 
-from dotenv import load_dotenv
 from langchain_core.globals import set_debug, set_verbose
 
-from config import load_config, save_config
-from trace import compact_trace
+from clyde.config import load_config, save_config
+from clyde.trace import compact_trace
+from clyde.auth import get_key
+from clyde.llm.registry import PROVIDERS
 
-# Load .env before reading keys so importers don't have to.
-load_dotenv()
-
-DEFAULT_MODEL_ID = "accounts/fireworks/models/deepseek-v4-flash-0731"
 DEFAULT_PROVIDER = "fireworks"
+DEFAULT_MODEL_ID = PROVIDERS[DEFAULT_PROVIDER].default_model
 
 # Current provider/model — updated by `set_model` and read as the default by
 # `get_llm`, so every rebuilt LLM picks up the new provider/model. Precedence on
-# startup: persisted user choice > env override > built-in default, so a model
-# picked in one session carries into the next.
+# startup: persisted user choice > built-in default, so a model picked in one
+# session carries into the next.
 _cfg = load_config()
 CURRENT_PROVIDER = _cfg.get("provider") or DEFAULT_PROVIDER
-CURRENT_MODEL_ID = (
-    _cfg.get("model_id") or os.getenv("FIREWORKS_MODEL_ID", DEFAULT_MODEL_ID)
-)
+CURRENT_MODEL_ID = _cfg.get("model_id") or DEFAULT_MODEL_ID
 
 # Raw JSON debug/verbose dumps are off; compact structured lines come from
 # trace.CompactTraceHandler (attached to every LLM below) instead.
@@ -42,7 +38,9 @@ _debug = os.getenv("LANGCHAIN_DEBUG", "false").lower() == "true"
 set_debug(_debug)
 set_verbose(_debug)
 
-from llm.registry import PROVIDERS
+
+class NoCredentialsError(RuntimeError):
+    """Raised when a provider has no API key in the OS keychain."""
 
 
 def get_llm(
@@ -54,7 +52,8 @@ def get_llm(
 
     `kwargs` are forwarded to the provider's chat class (e.g. temperature,
     max_tokens) and take precedence over the current defaults. A compact trace
-    callback is attached automatically.
+    callback is attached automatically. The API key is read from the OS keychain
+    (set via `clyde login`); there is no env-var fallback.
     """
     if provider not in PROVIDERS:
         raise ValueError(
@@ -69,10 +68,11 @@ def get_llm(
         ) from e
     cls = getattr(module, cfg.cls)
 
-    api_key = kwargs.pop("api_key", os.getenv(cfg.api_key_env))
+    api_key = kwargs.pop("api_key", get_key(provider))
     if not api_key:
-        raise RuntimeError(
-            f"{cfg.api_key_env} is not set. Add it to your .env file."
+        raise NoCredentialsError(
+            f"No API key for provider '{provider}' in the keychain. "
+            f"Run: clyde login {provider}"
         )
     if cfg.base_url is not None:
         kwargs.setdefault("base_url", cfg.base_url)
@@ -98,14 +98,20 @@ def set_model(provider: str, model_id: str) -> None:
 
 
 # Ready-to-use default instance. Bind tools on the caller side:
-#   from llm import llm
+#   from clyde.llm import llm
 #   llm.bind_tools(tools)
-# Build with the startup provider/model; if that's unusable (a persisted choice
-# whose package/key is now missing, or a bad id), fall back to the built-in
-# default so import never bricks the app.
+# Build with the startup provider/model. If the persisted choice is unusable
+# (missing package or bad id), fall back to the built-in default. A missing key
+# (NoCredentialsError) is expected before `clyde login` — leave `llm = None` so
+# import never bricks; `clyde` checks for this and directs the user to log in.
 try:
     llm = get_llm(temperature=0)
+except NoCredentialsError:
+    llm = None
 except Exception:
     CURRENT_PROVIDER = DEFAULT_PROVIDER
     CURRENT_MODEL_ID = DEFAULT_MODEL_ID
-    llm = get_llm(DEFAULT_PROVIDER, DEFAULT_MODEL_ID, temperature=0)
+    try:
+        llm = get_llm(DEFAULT_PROVIDER, DEFAULT_MODEL_ID, temperature=0)
+    except NoCredentialsError:
+        llm = None
