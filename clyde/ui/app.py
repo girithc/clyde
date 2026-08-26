@@ -161,10 +161,10 @@ class TraceStatus(Static):
 
 
 class StatusSep(Static):
-    """A muted '>>' separator between status groups (disabled-UI color)."""
+    """A muted '▸' separator between status groups (disabled-UI color)."""
 
     def __init__(self) -> None:
-        super().__init__(">>", classes="sep")
+        super().__init__("▸", classes="sep")
 
 
 class ModeStatus(Static):
@@ -449,15 +449,16 @@ class ClydeApp(App):
     # --- trace mode (none / minimal / full) ---
 
     _TRACE_MODES = ("none", "minimal", "full")
+    _TRACE_LABELS = {"none": "no trace", "minimal": "minimal trace", "full": "full trace"}
 
     def cycle_trace_mode(self) -> None:
         i = self._TRACE_MODES.index(self.trace_mode) if self.trace_mode in self._TRACE_MODES else 0
         self.trace_mode = self._TRACE_MODES[(i + 1) % len(self._TRACE_MODES)]
         self.update_trace_status()
-        self.notify(f"trace: {self.trace_mode}", timeout=2)
+        self.notify(self._TRACE_LABELS[self.trace_mode], timeout=2)
 
     def update_trace_status(self) -> None:
-        self.trace_status.update(f"trace: {self.trace_mode}")
+        self.trace_status.update(self._TRACE_LABELS[self.trace_mode])
 
     def action_toggle_trace(self) -> None:
         self.cycle_trace_mode()
@@ -473,10 +474,10 @@ class ClydeApp(App):
         i = self._AGENT_MODES.index(self.agent_mode) if self.agent_mode in self._AGENT_MODES else 0
         self.agent_mode = self._AGENT_MODES[(i + 1) % len(self._AGENT_MODES)]
         self.update_mode_status()
-        self.notify(f"mode: {self.agent_mode}", timeout=2)
+        self.notify(f"{self.agent_mode} mode", timeout=2)
 
     def update_mode_status(self) -> None:
-        self.mode_status.update(f"mode: {self.agent_mode}")
+        self.mode_status.update(f"{self.agent_mode} mode")
 
     # --- model selection (provider + model id) — inline in the input bar ---
 
@@ -530,7 +531,7 @@ class ClydeApp(App):
             self.exit_model_edit()
 
     def update_model_status(self) -> None:
-        self.model_status.update(f"model: {llm.CURRENT_MODEL_ID.split('/')[-1]}")
+        self.model_status.update(llm.CURRENT_MODEL_ID.split('/')[-1])
 
     def _apply_model(self, provider: str, model_id: str) -> None:
         """Rebuild every LLM with the new provider + model.
