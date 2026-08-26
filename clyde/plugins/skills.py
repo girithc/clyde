@@ -81,21 +81,36 @@ def _parse_skill(path: Path) -> Skill | None:
     )
 
 
-def load_skills(root: str = "./plugins") -> list[Skill]:
-    """Load every skill under ``root``. Returns [] if the dir is missing."""
-    base = Path(root)
-    if not base.is_dir():
-        return []
+def builtin_skills_dir() -> Path:
+    """The skills directory shipped with the package (may not exist yet)."""
+    try:
+        from importlib.resources import files
+        return Path(str(files("clyde") / "skills"))
+    except Exception:
+        # Source checkout / not installed as a package: fall back to a sibling dir.
+        return Path(__file__).resolve().parent.parent / "skills"
+
+
+def load_skills(root) -> list[Skill]:
+    """Load every skill under ``root`` (a path, or a list of paths).
+
+    Scans each root for ``SKILL.md`` / ``*.skill`` files and dedupes by skill
+    name across all roots (earlier roots win). Missing dirs are skipped.
+    """
+    roots = [Path(root)] if not isinstance(root, (list, tuple)) else [Path(r) for r in root]
 
     seen: set[str] = set()
     skills: list[Skill] = []
-    for pattern in _SKILL_GLOBS:
-        for path in base.glob(pattern):
-            skill = _parse_skill(path)
-            if skill is None or skill.name in seen:
-                continue
-            seen.add(skill.name)
-            skills.append(skill)
+    for base in roots:
+        if not base.is_dir():
+            continue
+        for pattern in _SKILL_GLOBS:
+            for path in base.glob(pattern):
+                skill = _parse_skill(path)
+                if skill is None or skill.name in seen:
+                    continue
+                seen.add(skill.name)
+                skills.append(skill)
     return skills
 
 

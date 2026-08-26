@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clyde-ai"
+version = "0.1.0"
+description = "Clyde — a terminal coding agent: DeepSeek-harness observability + Claude Code simplicity, zero learning curve."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Girith Choudhary" }]
+keywords = ["coding-agent", "langgraph", "langchain", "mcp", "terminal", "tui"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Code Generators",
+]
+dependencies = [
+    "langchain-core",
+    "langchain-fireworks",
+    "langgraph",
+    "langchain-mcp-adapters",
+    "pyyaml",
+    "rich",
+    "textual",
+    "keyring",
+]
+
+[project.optional-dependencies]
+anthropic = ["langchain-anthropic"]
+openai = ["langchain-openai"]
+all = ["langchain-anthropic", "langchain-openai"]
+
+[project.scripts]
+clyde = "clyde.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["clyde*"]
+
+[tool.setuptools.package-data]
+clyde = ["skills/**/*"]
