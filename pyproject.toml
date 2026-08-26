@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clyde-ai"
-version = "0.1.1"
+dynamic = ["version"]
 description = "Terminal coding agent."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,3 +42,6 @@ include = ["clyde*"]
 
 [tool.setuptools.package-data]
 clyde = ["skills/**/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "clyde.__version__"}
