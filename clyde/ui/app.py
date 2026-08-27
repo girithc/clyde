@@ -363,9 +363,15 @@ class ClydeApp(App):
         Binding("escape", "cancel_model_edit", "Cancel", priority=True),
     ]
 
-    def __init__(self, builder):
+    def __init__(self, builder, session_id=None, resume_messages=None):
         super().__init__()
         self.builder = builder
+        # Session persistence. On a fresh launch session_id is None and is
+        # created once the build finishes (on__ready); on `clyde last session`
+        # session_id + resume_messages are passed in and the transcript is
+        # replayed instead of greeting.
+        self.session_id = session_id
+        self._resume_msgs = list(resume_messages) if resume_messages else None
         # Heavy state — built in a background worker after the TUI paints so the
         # app appears instantly instead of blocking on the langchain/langgraph
         # import + graph compile (~1.2s). None until _Ready.
@@ -475,7 +481,9 @@ class ClydeApp(App):
         self._refresh_attach()
         self.maybe_probe_vision(llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID)
         self.update_model_status()
-        # If a message was typed during warmup, queue it behind the greeting.
+        # If a message was typed during warmup, fold it into the pending queue
+        # (built into a HumanMessage now that langchain is loaded). It's sent
+        # after the greeting on a fresh launch, or right after replay on resume.
         if self._queued is not None:
             from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -497,7 +505,21 @@ class ClydeApp(App):
                 for s in match_skills(item["text"], self.skills)
             ]
             self._pending.append(item)
-        await self._start_greet()
+        # Resume replays the saved transcript and skips the greeting; a fresh
+        # launch creates a session on disk and greets.
+        if self._resume_msgs is not None:
+            await self._replay_session()
+            await self._drain_pending()
+        else:
+            if self.session_id is None:
+                import os
+
+                from clyde.sessions import create_session
+
+                self.session_id = create_session(
+                    os.getcwd(), llm.CURRENT_PROVIDER, llm.CURRENT_MODEL_ID
+                )
+            await self._start_greet()
 
     def shutdown_manager(self) -> None:
         """Stop the MCP manager if it was started (called from __main__ finally)."""
@@ -712,23 +734,115 @@ class ClydeApp(App):
             self._pending_model = None
             self._apply_model(provider, model_id)
             return
-        # Continue with any messages queued while Clyde was busy. Render each
-        # queued user line now (in order, with a gap) so they appear after the
-        # prior answer instead of interleaved with its stream.
-        if self._pending:
-            for item in self._pending:
-                for s in item["skills"]:
-                    self.history.append(s)
-                self.history.append(item["msg"])
-                await self.transcript.append(
-                    user_renderable(item["text"], item["images"])
-                )
+        # Continue with any messages queued while Clyde was busy (renders them
+        # in order after the prior answer, then runs the graph again).
+        if await self._drain_pending():
+            return
+        self._busy = False
+        self._refresh_attach()
+        self.persist()
+
+    async def _drain_pending(self) -> bool:
+        """Render + enqueue any messages queued while Clyde was busy.
+
+        Renders each queued user line in order (with a gap) so they land after
+        the prior answer instead of interleaving with its stream, appends them
+        to history, then starts a continuation turn. Returns True if a turn was
+        started, False if the queue was empty (caller should then go idle).
+        """
+        if not self._pending:
+            return False
+        for item in self._pending:
+            for s in item["skills"]:
+                self.history.append(s)
+            self.history.append(item["msg"])
+            await self.transcript.append(
+                user_renderable(item["text"], item["images"])
+            )
+            await self.transcript.append(spacer_renderable())
+        self._pending = []
+        await self._start_continue()
+        return True
+
+    async def _replay_session(self) -> None:
+        """Replay a resumed session's messages into the transcript (no greeting).
+
+        Rebuilds history as a fresh system prompt + the saved messages, then
+        renders each user/assistant turn in order. System/tool messages are
+        skipped (they're context, not things the user saw on screen).
+        """
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        from clyde.agents import default_system_prompt
+
+        msgs = self._resume_msgs or []
+        self.history = [SystemMessage(content=default_system_prompt)] + list(msgs)
+        n = len(msgs)
+        await self.transcript.append(
+            Static(Text(f"Resumed session · {n} messages", style="dim"), classes="tline")
+        )
+        await self.transcript.append(spacer_renderable())
+        for m in msgs:
+            if isinstance(m, HumanMessage):
+                text, images = self._human_display(m)
+                await self.transcript.append(user_renderable(text, images))
                 await self.transcript.append(spacer_renderable())
-            self._pending = []
-            await self._start_continue()
-        else:
-            self._busy = False
-            self._refresh_attach()
+            elif isinstance(m, AIMessage):
+                content = m.content
+                text = content if isinstance(content, str) else self._text_from_parts(content)
+                await self.transcript.append(agent_renderable(text))
+                await self.transcript.append(spacer_renderable())
+            # SystemMessage / ToolMessage: context only — not replayed on screen.
+        self._resume_msgs = None
+        self.input.focus()
+
+    @staticmethod
+    def _human_display(m) -> tuple[str, list[str]]:
+        """Extract (text, image-names) from a HumanMessage for display.
+
+        Names aren't persisted, so attached images are shown as generic
+        `🖼 imageN` markers rather than their original filenames.
+        """
+        c = m.content
+        if isinstance(c, str):
+            return c, []
+        if isinstance(c, list):
+            texts: list[str] = []
+            imgs = 0
+            for p in c:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("type") == "text":
+                    texts.append(p.get("text", ""))
+                elif p.get("type") == "image_url":
+                    imgs += 1
+            return " ".join(t for t in texts if t), [f"image{i + 1}" for i in range(imgs)]
+        return str(c), []
+
+    @staticmethod
+    def _text_from_parts(content) -> str:
+        """Flatten a multimodal content list to its text parts."""
+        if not isinstance(content, list):
+            return str(content)
+        return " ".join(
+            p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+        )
+
+    def persist(self) -> None:
+        """Flush the current history to the session file (best-effort).
+
+        Called after each settled turn and once on exit. The base system prompt
+        is filtered out by the sessions package so it isn't duplicated on reload.
+        """
+        if self.session_id is None or self.history is None:
+            return
+        try:
+            from clyde.agents import default_system_prompt
+            from clyde.sessions import save_messages
+
+            save_messages(self.session_id, self.history, default_system_prompt)
+        except Exception:
+            pass  # persistence is a convenience, never fatal
 
     # --- clarify / ask-the-user (interrupt-based) ---
 
