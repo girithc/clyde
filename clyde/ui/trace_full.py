@@ -1,21 +1,30 @@
-"""Full trace block widget.
+"""Full trace block + per-turn panel widgets.
 
-A height-capped, internally scrollable ``TraceBlock`` mounted in the transcript
-when ``trace_mode = "full"``. The header is the one-line event summary; the body
-is the full content (LLM input messages, full response text, or untruncated tool
-output). Capping ``max-height`` keeps a huge payload from eating the transcript
-— the block scrolls internally instead.
+``TracePanel`` is the one container per user turn in ``trace_mode = "full"``:
+the whole trace (every event) plus the agent's final answer live inside it,
+height-capped so a large payload scrolls internally instead of eating the
+transcript. Each event with a body is a click-to-collapse ``Collapsible``
+(prompts, tool I/O, intermediate LLM responses), collapsed by default; the
+final answer renders expanded at the bottom.
+
+``TraceBlock`` remains as the fallback for trace events that fire with no
+active panel (e.g. the greeting).
 """
 
 from __future__ import annotations
 
 from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.widgets import Collapsible, Static
 from rich.text import Text
+
+from clyde.trace import TraceEvent
 
 
 class TraceBlock(VerticalScroll):
-    """A scrollable, height-capped trace event block (header + optional body)."""
+    """A scrollable, height-capped trace event block (header + optional body).
+
+    Fallback used when no per-turn ``TracePanel`` is active.
+    """
 
     DEFAULT_CSS = """
     TraceBlock {
@@ -40,3 +49,51 @@ class TraceBlock(VerticalScroll):
         yield Static(Text(self._header, style="dim bold"))
         if self._body:
             yield Static(Text(self._body, style="dim"))
+
+
+class TracePanel(VerticalScroll):
+    """One scrollable, height-capped panel per turn holding the full trace + answer.
+
+    Events are added via ``add_event``; the streaming/answer widget is added via
+    ``append``. Both mount children here and scroll to the bottom so the panel
+    follows the live stream.
+    """
+
+    DEFAULT_CSS = """
+    TracePanel {
+        height: auto;
+        max-height: 12;
+        border: round #555555;
+        padding: 0 1;
+        margin: 0 0 0 2;
+        scrollbar-size: 0 0;
+    }
+    TracePanel Static {
+        height: auto;
+    }
+    TracePanel Collapsible {
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    """
+
+    async def append(self, widget) -> None:
+        """Mount a child widget (e.g. the streaming answer) and follow it."""
+        await self.mount(widget)
+        self.call_after_refresh(self.scroll_end, animate=False)
+
+    async def add_event(self, event: TraceEvent) -> None:
+        """Render one trace event: a collapsed Collapsible if it has a body,
+        otherwise a plain dim header line."""
+        if event.body:
+            await self.mount(
+                Collapsible(
+                    Static(Text(event.body, style="dim")),
+                    title=event.header,
+                    collapsed=True,
+                )
+            )
+        else:
+            await self.mount(Static(Text(event.header, style="dim")))
+        self.call_after_refresh(self.scroll_end, animate=False)

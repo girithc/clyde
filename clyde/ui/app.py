@@ -42,7 +42,7 @@ from clyde.ui.renderer import (
     user_renderable,
 )
 from clyde.ui.thinking import ThinkingIndicator
-from clyde.ui.trace_full import TraceBlock
+from clyde.ui.trace_full import TraceBlock, TracePanel
 from clyde.ui.trace_minimal import minimal_trace_renderable
 from clyde.ui.transcript import Transcript
 
@@ -376,6 +376,7 @@ class ClydeApp(App):
         self._built = False
         self._warmup: Static | None = None
         self._queued: dict | None = None  # message submitted before ready
+        self._trace_panel: TracePanel | None = None  # active per-turn panel (full mode)
         self._busy = False
         self._pending: list = []  # mid-turn messages, processed as a continuation
         self._pending_model: tuple | None = None  # (provider, model_id) applied after a turn
@@ -653,35 +654,58 @@ class ClydeApp(App):
             if m:
                 self.indicator.add_tokens(int(m.group(1)))
         if self.trace_mode == "full":
-            await self.transcript.append_live(TraceBlock(header, event.body))
+            if self._trace_panel is not None:
+                await self._trace_panel.add_event(event)
+            else:
+                # No active panel (e.g. greeting): fall back to a standalone block.
+                await self.transcript.append_live(TraceBlock(header, event.body))
         elif self.trace_mode == "minimal":
             await self.transcript.append(minimal_trace_renderable(header))
         # "none" -> no inline trace line
 
     async def on__stream_chunk(self, message: _StreamChunk) -> None:
+        if self._trace_panel is not None:
+            # Full mode: the streaming answer lives inside the per-turn panel.
+            if self.streaming is None:
+                self.streaming = Static("")
+                await self._trace_panel.append(self.streaming)
+            self.streaming.update(message.text)
+            self._trace_panel.call_after_refresh(self._trace_panel.scroll_end, animate=False)
+            return
         if self.streaming is None:
             self.streaming = Static("")
             await self.transcript.append_live(self.streaming)
         self.streaming.update(message.text)
 
     async def on__agent_content(self, message: _AgentContent) -> None:
-        # Freeze the streaming widget into the rendered Markdown answer, then add
-        # the trailing gap here so every conversation message owns its own spacer
-        # at render time (no reliance on a later _TurnDone for the gap).
+        # Freeze the streaming widget into the rendered Markdown answer. In full
+        # mode the streaming widget lives inside the per-turn panel, so the answer
+        # settles there (no separate transcript block / spacer needed).
         if self.streaming is None:
-            await self.transcript.append(agent_renderable(message.text))
+            if self._trace_panel is None:
+                await self.transcript.append(agent_renderable(message.text))
+                await self.transcript.append(spacer_renderable())
+            else:
+                await self._trace_panel.append(Static(agent_renderable(message.text)))
         else:
             self.streaming.update(agent_renderable(message.text))
             self.streaming = None
-        await self.transcript.append(spacer_renderable())
+            if self._trace_panel is None:
+                await self.transcript.append(spacer_renderable())
 
     async def on__turn_done(self, message: _TurnDone) -> None:
         # Settle the indicator inline to "Thought for Xs" and leave it there.
         if self.indicator is not None:
             self.indicator.done()
             self.indicator = None
-        # No spacer here: each conversation/live message (user, indicator, answer)
-        # owns its own trailing gap at render time, so the block is already spaced.
+        # Close the per-turn trace panel (full mode): separate it from the next
+        # turn with a trailing gap, then drop the active-panel reference so later
+        # events (e.g. greeting) don't route into a completed turn's panel.
+        if self._trace_panel is not None:
+            await self.transcript.append(spacer_renderable())
+            self._trace_panel = None
+        # No spacer here otherwise: each conversation/live message (user,
+        # indicator, answer) owns its own trailing gap at render time.
         # Apply a deferred model switch now that the turn is done.
         if self._pending_model is not None:
             provider, model_id = self._pending_model
@@ -1041,6 +1065,11 @@ class ClydeApp(App):
         self.indicator.start()
         # One-line gap after the live thinking indicator.
         await self.transcript.append(spacer_renderable())
+        # Full mode: one bordered panel collects the whole trace + the answer
+        # for this turn (height-capped, scrolls internally).
+        if self.trace_mode == "full":
+            self._trace_panel = TracePanel()
+            await self.transcript.append_live(self._trace_panel)
         self.run_worker(lambda: self._turn(text, msg), thread=True)
 
     async def _start_continue(self) -> None:
@@ -1054,6 +1083,11 @@ class ClydeApp(App):
         self.indicator.start()
         # One-line gap after the live thinking indicator.
         await self.transcript.append(spacer_renderable())
+        # Full mode: one bordered panel collects the whole trace + the answer
+        # for this turn (height-capped, scrolls internally).
+        if self.trace_mode == "full":
+            self._trace_panel = TracePanel()
+            await self.transcript.append_live(self._trace_panel)
         self.run_worker(self._continue_run, thread=True)
 
     async def _start_greet(self) -> None:
