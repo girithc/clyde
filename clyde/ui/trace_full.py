@@ -81,10 +81,10 @@ class TracePanel(VerticalScroll):
     async def append(self, widget) -> None:
         """Mount a child widget (e.g. the streaming answer) and follow it."""
         await self.mount(widget)
-        self.call_after_refresh(self.scroll_end, animate=False)
+        self._follow()
 
     async def add_event(self, event: TraceEvent) -> None:
-        """Render one trace event: a collapsed Collapsible if it has a body,
+        """Render one trace event: an expanded Collapsible if it has a body,
         otherwise a plain dim header line."""
         if event.body:
             await self.mount(
@@ -96,4 +96,13 @@ class TracePanel(VerticalScroll):
             )
         else:
             await self.mount(Static(Text(event.header, style="dim")))
+        self._follow()
+
+    def _follow(self) -> None:
+        """Pin the panel to the bottom so the latest event stays in view.
+
+        Expanded Collapsibles lay out after mount, so we scroll on the next
+        refresh and again a tick later once their body height is known.
+        """
         self.call_after_refresh(self.scroll_end, animate=False)
+        self.set_timer(0.05, lambda: self.scroll_end(animate=False))
