@@ -128,3 +128,4 @@ class WorkerState(TypedDict):
     shared_context: list[BaseMessage]
     context: Annotated[list[BaseMessage], add_messages]
     results: Annotated[list[TaskResult], add]
+    steps: int  # verify-loop iterations so far (last-value; caps the retry loop)
