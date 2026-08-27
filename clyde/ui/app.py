@@ -686,34 +686,24 @@ class ClydeApp(App):
         # "none" -> no inline trace line
 
     async def on__stream_chunk(self, message: _StreamChunk) -> None:
-        if self._trace_panel is not None:
-            # Full mode: the streaming answer lives inside the per-turn panel.
-            if self.streaming is None:
-                self.streaming = Static("")
-                await self._trace_panel.append(self.streaming)
-            self.streaming.update(message.text)
-            self._trace_panel.call_after_refresh(self._trace_panel.scroll_end, animate=False)
-            return
+        # The answer always lives in the transcript (after the trace panel in full
+        # mode), not inside the panel.
         if self.streaming is None:
             self.streaming = Static("")
             await self.transcript.append_live(self.streaming)
         self.streaming.update(message.text)
 
     async def on__agent_content(self, message: _AgentContent) -> None:
-        # Freeze the streaming widget into the rendered Markdown answer. In full
-        # mode the streaming widget lives inside the per-turn panel, so the answer
-        # settles there (no separate transcript block / spacer needed).
+        # Freeze the streaming widget into the rendered Markdown answer. When a
+        # trace panel is active the trailing gap is added in on__turn_done (after
+        # the panel + answer); otherwise it's added here.
         if self.streaming is None:
-            if self._trace_panel is None:
-                await self.transcript.append(agent_renderable(message.text))
-                await self.transcript.append(spacer_renderable())
-            else:
-                await self._trace_panel.append(Static(agent_renderable(message.text)))
+            await self.transcript.append(agent_renderable(message.text))
         else:
             self.streaming.update(agent_renderable(message.text))
             self.streaming = None
-            if self._trace_panel is None:
-                await self.transcript.append(spacer_renderable())
+        if self._trace_panel is None:
+            await self.transcript.append(spacer_renderable())
 
     async def on__turn_done(self, message: _TurnDone) -> None:
         # Settle the indicator inline to "Thought for Xs" and leave it there.

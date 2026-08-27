@@ -91,7 +91,7 @@ class TracePanel(VerticalScroll):
                 Collapsible(
                     Static(Text(event.body, style="dim")),
                     title=event.header,
-                    collapsed=True,
+                    collapsed=False,
                 )
             )
         else:
