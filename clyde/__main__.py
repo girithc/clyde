@@ -146,11 +146,9 @@ def _run_tui(resume_sid: str | None = None) -> None:
             from rich.console import Console
             from rich.text import Text
 
-            line = Text.assemble(
-                "Resume with:  ",
-                Text("clyde last session", style="#888888"),
+            Console().print(
+                Text("Resume with: clyde last session", style="#888888")
             )
-            Console().print(line)
 
 
 def main() -> None:
