@@ -1,21 +1,77 @@
 """Clyde entry point: `clyde` console script (and `python -m clyde`).
 
 Subcommands:
-    clyde                   launch the TUI (the default)
+    clyde                   launch the TUI (the default; starts a fresh session)
+    clyde last session      resume the most recent session in this directory
+    clyde all sessions      list every saved session
+    clyde help              show all commands
     clyde login [prov...]   set API keys in the OS keychain (interactive)
     clyde logout [prov...]  remove keys (no args / --all => all)
     clyde auth              show configured providers + the active one
 
+Sessions persist under ~/.clyde/sessions/<sid>/ (see clyde.sessions).
 Credentials live in the OS keychain (see clyde.auth) — no .env, no env fallback.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 
-def _run_tui() -> None:
+_HELP_CARD = """\
+Clyde — a terminal coding agent.
+
+Usage:
+  clyde                       launch the TUI (fresh session)
+  clyde last session          resume the most recent session in this directory
+  clyde all sessions          list every saved session
+  clyde help                  show this help
+  clyde login [provider ...]  set API keys in the OS keychain (interactive)
+  clyde logout [provider ...] remove keys (clyde logout --all clears every key)
+  clyde auth                  show configured providers + the active one
+
+Run `clyde` with no args to start coding. Quit with ctrl-c; the resume hint is
+printed on exit. Sessions are stored locally at ~/.clyde/sessions/.
+"""
+
+
+def _print_help() -> None:
+    print(_HELP_CARD)
+
+
+def _list_sessions() -> None:
+    """Print every saved session as a table (newest first)."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from clyde.sessions import list_sessions
+    from clyde.sessions.meta import format_last_active
+
+    metas = list_sessions()
+    if not metas:
+        print("No saved sessions yet. Start one with: clyde")
+        return
+
+    table = Table(title="Clyde sessions", show_header=True, header_style="bold")
+    table.add_column("id", style="dim", no_wrap=True)
+    table.add_column("cwd")
+    table.add_column("msgs", justify="right")
+    table.add_column("last active")
+    table.add_column("model / title")
+    for m in metas:
+        cwd = m.get("cwd", "")
+        cwd_disp = Path(cwd).name if cwd else ""
+        title = m.get("title", "")
+        model = (m.get("model_id") or "").split("/")[-1]
+        label = f"{model} · {title}" if title else model
+        table.add_row(m.get("id", ""), cwd_disp, str(m.get("message_count", 0)),
+                      format_last_active(m), label)
+    Console().print(table)
+
+
+def _run_tui(resume_sid: str | None = None) -> None:
     # Light imports only — defer the agent/LLM graph until we know a key exists,
     # so `clyde` with no key prints a clean login hint instead of crashing on the
     # import-time LLM build.
@@ -39,6 +95,16 @@ def _run_tui() -> None:
 
     import clyde.trace as _trace
     from clyde.ui import ClydeApp
+
+    # Resume: load the saved transcript into the app so it replays on launch.
+    resume_messages = None
+    if resume_sid is not None:
+        from clyde.sessions import load_messages
+
+        resume_messages = load_messages(resume_sid)
+        if not resume_messages:
+            print(f"Session {resume_sid} is empty or unreadable. Starting fresh.")
+            resume_sid = None
 
     def _build():
         """Heavy work, run in a background worker after the TUI paints so the
@@ -64,7 +130,7 @@ def _run_tui() -> None:
         history = [SystemMessage(content=system_prompt)]
         return graph, history, skills, manager
 
-    app = ClydeApp(builder=_build)
+    app = ClydeApp(builder=_build, session_id=resume_sid, resume_messages=resume_messages)
 
     # Route trace lines into the TUI transcript (dimmed) instead of stdout.
     _trace.compact_trace.set_sink(app.post_trace)
@@ -73,6 +139,18 @@ def _run_tui() -> None:
         app.run()
     finally:
         app.shutdown_manager()
+        # Safety-net flush in case the last turn didn't settle, then show the
+        # resume hint so the user knows how to pick the conversation back up.
+        app.persist()
+        if app.session_id is not None:
+            from rich.console import Console
+            from rich.text import Text
+
+            line = Text.assemble(
+                "Session saved.  Resume with:  ",
+                Text("clyde last session", style="dim #888888"),
+            )
+            Console().print(line)
 
 
 def main() -> None:
@@ -90,6 +168,15 @@ def main() -> None:
     p_logout.add_argument("--all", action="store_true", help="remove every key")
 
     sub.add_parser("auth", help="show configured providers + the active one")
+    sub.add_parser("help", help="show all commands")
+
+    # `clyde last session` / `clyde all sessions` — the trailing word is a
+    # literal filler token consumed by argparse (kept for the natural phrasing).
+    p_last = sub.add_parser("last", help="resume the most recent session in this directory")
+    p_last.add_argument("session", help="literal 'session'")
+
+    p_all = sub.add_parser("all", help="list every saved session")
+    p_all.add_argument("sessions", help="literal 'sessions'")
 
     args = parser.parse_args()
 
@@ -102,6 +189,17 @@ def main() -> None:
     elif args.command == "auth":
         from clyde.auth import auth_status
         auth_status()
+    elif args.command == "help":
+        _print_help()
+    elif args.command == "all":
+        _list_sessions()
+    elif args.command == "last":
+        from clyde.sessions import latest_session
+        sid = latest_session(os.getcwd())
+        if sid is None:
+            print(f"No sessions found in {os.getcwd()}.")
+            return
+        _run_tui(resume_sid=sid)
     else:
         _run_tui()
 
