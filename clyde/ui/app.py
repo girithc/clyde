@@ -526,7 +526,7 @@ class ClydeApp(App):
         if self.manager is not None:
             self.manager.shutdown()
 
-    _HINTS = ("ctrl-c to exit", "shift-tab to cycle mode")
+    _HINTS = ("ctrl-c to exit", "shift-tab to cycle", "ctrl-t to trace")
 
     def _rotate_hint(self) -> None:
         self._hint_index = (self._hint_index + 1) % len(self._HINTS)
@@ -1153,9 +1153,14 @@ class ClydeApp(App):
         A resume after a clarify reuses this same config (same thread_id) so the
         graph continues from the paused checkpoint instead of restarting.
         """
+        from clyde.trace import compact_trace  # lazy: keep langchain off the startup path
+
         self._turn_config = {
             "configurable": {"thread_id": str(uuid.uuid4())},
             "recursion_limit": 100,
+            # Propagate the trace handler to tool runs too (the LLM already has
+            # it via the factory), so [Tool] start/end events fire in the trace.
+            "callbacks": [compact_trace],
         }
         return self._turn_config
 
@@ -1213,6 +1218,7 @@ class ClydeApp(App):
         static greet if the LLM call fails so a session never hangs on greet.
         """
         from clyde.agents.coding_agent.greeting import build_greet_graph
+        from clyde.trace import compact_trace
         from langchain_core.messages import AIMessage
 
         try:
@@ -1225,7 +1231,7 @@ class ClydeApp(App):
             for mode, data in greet_graph.stream(
                 {"messages": []},
                 stream_mode=["messages", "values"],
-                config={"recursion_limit": 100},
+                config={"recursion_limit": 100, "callbacks": [compact_trace]},
             ):
                 if mode == "messages":
                     chunk, cmeta = data
