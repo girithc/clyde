@@ -148,7 +148,7 @@ def _run_tui(resume_sid: str | None = None) -> None:
 
             line = Text.assemble(
                 "Session saved.  Resume with:  ",
-                Text("clyde last session", style="dim #888888"),
+                Text("clyde last session", style="#888888"),
             )
             Console().print(line)
 
